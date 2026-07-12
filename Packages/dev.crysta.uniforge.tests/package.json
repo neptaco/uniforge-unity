@@ -1,0 +1,14 @@
+{
+  "name": "dev.crysta.uniforge.tests",
+  "version": "0.9.0",
+  "displayName": "UniForge Tests",
+  "description": "Editor tests for UniForge package",
+  "unity": "6000.0",
+  "author": {
+    "name": "CrystaDev"
+  },
+  "license": "MIT",
+  "dependencies": {
+    "dev.crysta.uniforge": "0.9.0"
+  }
+}
