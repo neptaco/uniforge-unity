@@ -1,15 +1,26 @@
 using System;
+using System.Threading;
 using UnityEngine;
 
 namespace UniForge
 {
     public partial class ConsoleLogCapture
     {
+        // OnLogReceived をメインスレッドへ配送するためのコンテキスト
+        // （EnsureSubscribed はメインスレッドで呼ばれる前提）
+        private SynchronizationContext _mainThreadContext;
+        private int _mainThreadId;
+
         public void EnsureSubscribed()
         {
             if (_isSubscribed) return;
 
-            Application.logMessageReceived += OnLogMessageReceived;
+            _mainThreadContext = SynchronizationContext.Current;
+            _mainThreadId = Thread.CurrentThread.ManagedThreadId;
+
+            // logMessageReceived はメインスレッドのログしか届かないため、
+            // バックグラウンドスレッドのログも捕捉できる threaded 版を購読する
+            Application.logMessageReceivedThreaded += OnLogMessageReceived;
             _isSubscribed = true;
         }
 
@@ -17,13 +28,17 @@ namespace UniForge
         {
             if (_isSubscribed)
             {
-                Application.logMessageReceived -= OnLogMessageReceived;
+                Application.logMessageReceivedThreaded -= OnLogMessageReceived;
                 _isSubscribed = false;
             }
 
             PersistImportantLogs();
         }
 
+        /// <summary>
+        /// ログ発行スレッド上で呼ばれる（メインスレッドとは限らない）。
+        /// Unity API に触れないこと。バッファ操作は _lock 下で行う。
+        /// </summary>
         private void OnLogMessageReceived(string condition, string stackTrace, LogType type)
         {
             var entry = new LogEntry(condition, stackTrace, type);
@@ -33,7 +48,20 @@ namespace UniForge
                 LogBuffer.Add(entry);
             }
 
-            OnLogReceived?.Invoke(entry);
+            // 購読者は Unity API に触れる可能性があるため、メインスレッドへ配送する
+            if (OnLogReceived == null) return;
+            if (Thread.CurrentThread.ManagedThreadId == _mainThreadId || _mainThreadContext == null)
+            {
+                OnLogReceived?.Invoke(entry);
+            }
+            else
+            {
+                _mainThreadContext.Post(_ =>
+                {
+                    try { OnLogReceived?.Invoke(entry); }
+                    catch (Exception e) { Debug.LogError($"[UniForge] OnLogReceived handler error: {e}"); }
+                }, null);
+            }
         }
 
         private void PersistImportantLogs()

@@ -8,7 +8,7 @@ namespace UniForge.Tools.Queries
     /// Domain Reload を跨いでも再開可能。
     /// </summary>
     [Tool("wait-for-log",
-        Description = "Wait until a log message matching the given regex pattern appears in Unity console. Polls logs until a match is found or timeout.",
+        Description = "Wait until a log message matching the given regex pattern appears in Unity console. Polls logs until a match is found or timeout. The initial check also searches logs emitted within the last lookback_ms milliseconds (default: 2000), so a log emitted just before this call is not missed.",
         Title = "Wait for Log",
         Category = ToolCategory.Logs,
         Kind = ToolKind.Query,
@@ -17,6 +17,7 @@ namespace UniForge.Tools.Queries
     {
         private const int DefaultTimeoutMs = 10000;
         private const int DefaultPollIntervalMs = 500;
+        private const int DefaultLookbackMs = 2000;
         private const int MatchedLogLimit = 10;
 
         /// <summary>引数定義</summary>
@@ -33,6 +34,9 @@ namespace UniForge.Tools.Queries
 
             [ToolParameter("Poll interval in milliseconds (default: 500)")]
             public int? poll_interval_ms;
+
+            [ToolParameter("How far back in milliseconds the initial check searches already-captured logs, so a log emitted just before this call is not missed (default: 2000, 0 = only logs emitted after this call)")]
+            public int? lookback_ms;
         }
 
         /// <summary>出力定義</summary>
@@ -56,11 +60,6 @@ namespace UniForge.Tools.Queries
             public long since_ts;
         }
 
-        private ToolDefinition _definition;
-
-        public override ToolDefinition Definition
-            => _definition ??= ToolDefinitionBuilder.FromHandler<WaitForLogHandler>();
-
         protected internal override ToolResult Execute(string argsJson)
         {
             var args = new ToolArgsParser(argsJson);
@@ -81,13 +80,16 @@ namespace UniForge.Tools.Queries
             var timeoutMs = args.GetInt("timeout_ms", DefaultTimeoutMs);
             var filter = args.GetString("filter", "all");
             var pollIntervalMs = args.GetInt("poll_interval_ms", DefaultPollIntervalMs);
+            var lookbackMs = Math.Max(0, args.GetInt("lookback_ms", DefaultLookbackMs));
             var sinceTs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
 
-            // 初回チェック: 既にマッチするログがあるか
+            // 初回チェック: 直前（lookback_ms 以内）に出力済みのログもマッチ対象にする。
+            // トリガー実行 → wait-for-log の順で呼ばれても取りこぼさないようにするため。
+            // 以降のポーリングは呼び出し時刻（sinceTs）を基準にする。
             var matched = ConsoleLogCapture.instance.GetLogsFiltered(new LogFilterOptions
             {
                 TypeFilter = filter,
-                Since = sinceTs,
+                Since = sinceTs - lookbackMs,
                 Pattern = pattern,
                 IgnoreCase = true,
                 Limit = MatchedLogLimit

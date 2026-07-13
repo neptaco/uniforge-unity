@@ -34,8 +34,6 @@ namespace UniForge.Tools.Queries
 
     /// <summary>
     /// ログ取得ツール（拡張フィルタ対応）
-    ///
-    /// Source Generator使用時は partial にして Definition => GeneratedDefinition を返す
     /// </summary>
     [Tool("logs",
         Description = "Get console logs from Unity Editor with advanced filtering options",
@@ -44,9 +42,9 @@ namespace UniForge.Tools.Queries
         Kind = ToolKind.Query,
         Idempotent = true)]
     [ToolOutput(typeof(GetLogsOutput))]
-    public partial class GetLogsHandler : QueryHandler
+    public class GetLogsHandler : QueryHandler
     {
-        /// <summary>引数定義（Source Generator用）</summary>
+        /// <summary>引数定義</summary>
         public class Args
         {
             [ToolParameter("Filter logs by type. 'errors' includes Error/Exception/Assert.", Enum = "all,errors,warnings,info", Default = "all")]
@@ -72,18 +70,6 @@ namespace UniForge.Tools.Queries
 
             [ToolParameter("Include stack traces in output", Default = false)]
             public bool include_stack_trace;
-        }
-
-        private ToolDefinition _definition;
-
-        public override ToolDefinition Definition
-        {
-            get
-            {
-                // 遅延初期化（リフレクションから生成）
-                _definition ??= ToolDefinitionBuilder.FromHandler<GetLogsHandler>();
-                return _definition;
-            }
         }
 
         protected internal override ToolResult Execute(string argsJson)

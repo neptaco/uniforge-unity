@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 
 namespace UniForge
 {
@@ -45,7 +46,8 @@ namespace UniForge
                 if (value is int i) return i;
                 if (value is long l) return (int)l;
                 if (value is double d) return (int)d;
-                if (int.TryParse(value?.ToString(), out var parsed)) return parsed;
+                // カルチャ非依存でパースする（InvariantCulture）
+                if (int.TryParse(value?.ToString(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsed)) return parsed;
             }
             return defaultValue;
         }
@@ -58,7 +60,8 @@ namespace UniForge
                 if (value is long l) return l;
                 if (value is int i) return i;
                 if (value is double d) return (long)d;
-                if (long.TryParse(value?.ToString(), out var parsed)) return parsed;
+                // カルチャ非依存でパースする（InvariantCulture）
+                if (long.TryParse(value?.ToString(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsed)) return parsed;
             }
             return defaultValue;
         }
@@ -72,7 +75,8 @@ namespace UniForge
                 if (value is double d) return (float)d;
                 if (value is int i) return i;
                 if (value is long l) return l;
-                if (float.TryParse(value?.ToString(), out var parsed)) return parsed;
+                // カルチャ非依存でパースする（InvariantCulture、桁区切りは不許可）
+                if (float.TryParse(value?.ToString(), NumberStyles.Float, CultureInfo.InvariantCulture, out var parsed)) return parsed;
             }
             return defaultValue;
         }
@@ -97,7 +101,7 @@ namespace UniForge
             if (value is int i) return i;
             if (value is long l) return (int)l;
             if (value is double d) return (int)d;
-            if (int.TryParse(value?.ToString(), out var parsed)) return parsed;
+            if (int.TryParse(value?.ToString(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsed)) return parsed;
             return null;
         }
 

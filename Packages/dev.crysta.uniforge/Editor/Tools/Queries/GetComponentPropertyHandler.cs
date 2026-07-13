@@ -13,7 +13,7 @@ namespace UniForge.Tools.Queries
         Title = "Get Component Property",
         Kind = ToolKind.Query,
         Idempotent = true)]
-    public partial class GetComponentPropertyHandler : QueryHandler
+    public class GetComponentPropertyHandler : QueryHandler
     {
         /// <summary>引数定義</summary>
         public class Args
@@ -52,11 +52,6 @@ namespace UniForge.Tools.Queries
             public string[] errors;
             public string error;
         }
-
-        private ToolDefinition _definition;
-
-        public override ToolDefinition Definition
-            => _definition ??= ToolDefinitionBuilder.FromHandler<GetComponentPropertyHandler>();
 
         protected internal override ToolResult Execute(string argsJson)
         {

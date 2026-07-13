@@ -14,7 +14,7 @@ namespace UniForge.Tools.Mutations
         Kind = ToolKind.Mutation,
         Destructive = true,
         Idempotent = false)]
-    public partial class NewSceneHandler : MutationHandler
+    public class NewSceneHandler : MutationHandler
     {
         /// <summary>引数定義</summary>
         public class Args
@@ -44,11 +44,6 @@ namespace UniForge.Tools.Mutations
             public string message;
         }
 
-        private ToolDefinition _definition;
-
-        public override ToolDefinition Definition
-            => _definition ??= ToolDefinitionBuilder.FromHandler<NewSceneHandler>();
-
         protected internal override ToolResult Execute(string argsJson)
         {
             var args = new ToolArgsParser(argsJson);
@@ -60,9 +55,13 @@ namespace UniForge.Tools.Mutations
             // 現在のシーンを保存
             if (saveCurrent)
             {
-                if (!EditorSceneManager.SaveCurrentModifiedScenesIfUserWantsTo())
+                // 未保存の変更がある場合、ダイアログを出さずに自動保存する
+                if (SceneHelper.HasUnsavedSceneChanges(out _))
                 {
-                    return ToolResult.Fail("New scene creation cancelled by user (unsaved changes)");
+                    if (!EditorSceneManager.SaveOpenScenes())
+                    {
+                        return ToolResult.Fail("Failed to save current scene(s). Check for errors and try again.");
+                    }
                 }
             }
             else

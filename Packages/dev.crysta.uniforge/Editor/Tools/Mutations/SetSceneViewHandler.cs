@@ -13,7 +13,7 @@ namespace UniForge.Tools.Mutations
         Kind = ToolKind.Mutation,
         Destructive = false,
         Idempotent = true)]
-    public partial class SetSceneViewHandler : MutationHandler
+    public class SetSceneViewHandler : MutationHandler
     {
         /// <summary>引数定義</summary>
         public class Args
@@ -82,11 +82,6 @@ namespace UniForge.Tools.Mutations
             public bool show_skybox;
             public bool show_fog;
         }
-
-        private ToolDefinition _definition;
-
-        public override ToolDefinition Definition
-            => _definition ??= ToolDefinitionBuilder.FromHandler<SetSceneViewHandler>();
 
         protected internal override ToolResult Execute(string argsJson)
         {

@@ -1,4 +1,8 @@
+using System;
 using System.Collections.Generic;
+using System.Text.RegularExpressions;
+using System.Threading;
+using System.Threading.Tasks;
 using NUnit.Framework;
 using UnityEngine;
 using UnityEngine.TestTools;
@@ -332,6 +336,74 @@ namespace UniForge.Tests
             {
                 _capture.MaxLogs = originalMaxLogs;
             }
+        }
+
+        #endregion
+
+        #region Threaded Capture Tests
+
+        [Test]
+        public void LogFromBackgroundThread_IsCaptured()
+        {
+            _capture.EnsureSubscribed();
+
+            var marker = "BgThreadLog_" + Guid.NewGuid().ToString("N");
+            var task = Task.Run(() => Debug.Log(marker));
+            Assert.IsTrue(task.Wait(TimeSpan.FromSeconds(5)), "Background log task did not complete");
+
+            // logMessageReceivedThreaded はログ発行スレッドで同期実行されるはずだが、余裕を持ってポーリングする
+            var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(2);
+            var logs = _capture.GetLogsFiltered(new LogFilterOptions { Pattern = marker, Limit = 10 });
+            while (logs.Count == 0 && DateTime.UtcNow < deadline)
+            {
+                Thread.Sleep(10);
+                logs = _capture.GetLogsFiltered(new LogFilterOptions { Pattern = marker, Limit = 10 });
+            }
+
+            Assert.AreEqual(1, logs.Count, "Background thread log was not captured");
+            Assert.AreEqual(marker, logs[0].message);
+        }
+
+        #endregion
+
+        #region BuildPatternRegex Cache Tests
+
+        [Test]
+        public void BuildPatternRegex_SamePatternAndCase_ReturnsCachedInstance()
+        {
+            var r1 = ConsoleLogCapture.BuildPatternRegex(
+                new LogFilterOptions { Pattern = "cache_pattern_same", IgnoreCase = true });
+            var r2 = ConsoleLogCapture.BuildPatternRegex(
+                new LogFilterOptions { Pattern = "cache_pattern_same", IgnoreCase = true });
+
+            Assert.AreSame(r1, r2, "Same pattern/ignoreCase must return the cached Regex instance");
+        }
+
+        [Test]
+        public void BuildPatternRegex_DifferentIgnoreCase_ReturnsDifferentInstances()
+        {
+            var r1 = ConsoleLogCapture.BuildPatternRegex(
+                new LogFilterOptions { Pattern = "cache_pattern_case", IgnoreCase = true });
+            var r2 = ConsoleLogCapture.BuildPatternRegex(
+                new LogFilterOptions { Pattern = "cache_pattern_case", IgnoreCase = false });
+
+            Assert.AreNotSame(r1, r2);
+            Assert.IsTrue(r1.Options.HasFlag(RegexOptions.IgnoreCase));
+            Assert.IsFalse(r2.Options.HasFlag(RegexOptions.IgnoreCase));
+        }
+
+        [Test]
+        public void BuildPatternRegex_InvalidPattern_ReturnsLiteralAndCaches()
+        {
+            Regex r1 = null;
+            Assert.DoesNotThrow(() => r1 = ConsoleLogCapture.BuildPatternRegex(
+                new LogFilterOptions { Pattern = "[invalid(", IgnoreCase = true }));
+            Assert.IsNotNull(r1);
+            Assert.IsTrue(r1.IsMatch("prefix [invalid( suffix"), "Invalid pattern must fall back to literal match");
+
+            var r2 = ConsoleLogCapture.BuildPatternRegex(
+                new LogFilterOptions { Pattern = "[invalid(", IgnoreCase = true });
+            Assert.AreSame(r1, r2, "Fallback literal Regex must also be cached");
         }
 
         #endregion

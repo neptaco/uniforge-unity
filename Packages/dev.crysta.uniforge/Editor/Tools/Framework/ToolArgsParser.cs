@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.Reflection;
 using UnityEngine;
 
@@ -175,30 +176,30 @@ namespace UniForge.Tools
                 return value.ToString();
             }
 
-            // 整数
+            // 整数（文字列は InvariantCulture でパース。CurrentCulture に依存させない）
             if (targetType == typeof(int))
             {
-                try { return Convert.ToInt32(value); }
+                try { return Convert.ToInt32(value, CultureInfo.InvariantCulture); }
                 catch (Exception ex) { throw new FormatException($"Cannot convert '{value}' ({value.GetType().Name}) to int: {ex.Message}"); }
             }
 
             // 長整数
             if (targetType == typeof(long))
             {
-                try { return Convert.ToInt64(value); }
+                try { return Convert.ToInt64(value, CultureInfo.InvariantCulture); }
                 catch (Exception ex) { throw new FormatException($"Cannot convert '{value}' ({value.GetType().Name}) to long: {ex.Message}"); }
             }
 
             // 浮動小数点
             if (targetType == typeof(float))
             {
-                try { return Convert.ToSingle(value); }
+                try { return Convert.ToSingle(value, CultureInfo.InvariantCulture); }
                 catch (Exception ex) { throw new FormatException($"Cannot convert '{value}' ({value.GetType().Name}) to float: {ex.Message}"); }
             }
 
             if (targetType == typeof(double))
             {
-                try { return Convert.ToDouble(value); }
+                try { return Convert.ToDouble(value, CultureInfo.InvariantCulture); }
                 catch (Exception ex) { throw new FormatException($"Cannot convert '{value}' ({value.GetType().Name}) to double: {ex.Message}"); }
             }
 
@@ -217,7 +218,7 @@ namespace UniForge.Tools
                     var result = new float[list.Count];
                     for (int i = 0; i < list.Count; i++)
                     {
-                        result[i] = Convert.ToSingle(list[i]);
+                        result[i] = Convert.ToSingle(list[i], CultureInfo.InvariantCulture);
                     }
                     return result;
                 }

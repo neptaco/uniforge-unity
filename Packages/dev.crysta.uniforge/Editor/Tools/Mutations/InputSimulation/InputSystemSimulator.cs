@@ -28,6 +28,90 @@ namespace UniForge.Tools.Mutations.InputSimulation
         // Windows では static メソッドを使用するためインスタンスは不要
 #endif
 
+        #region Pending State (同一フレーム内の状態合成)
+
+        /// <summary>
+        /// 同一フレーム内で既にキューした入力状態のシャドウコピー。
+        /// StateEvent.From はデバイスの「まだ更新されていない現在状態」をスナップショット
+        /// するため、同一フレームで 2 回イベントをキューすると 2 回目が 1 回目を打ち消して
+        /// しまう（例: Shift+A が A になる）。キュー済みの変更をここに記録し、
+        /// 次のイベント構築時に上書き適用することで打ち消しを防ぐ。
+        /// </summary>
+        private sealed class PendingDeviceState
+        {
+            public readonly Dictionary<InputControl<float>, float> FloatValues = new Dictionary<InputControl<float>, float>();
+            public Vector2? Position;
+        }
+
+        private static readonly Dictionary<InputDevice, PendingDeviceState> PendingStates = new Dictionary<InputDevice, PendingDeviceState>();
+        private static bool _afterUpdateHooked;
+
+        private static PendingDeviceState GetOrCreatePendingState(InputDevice device)
+        {
+            if (!PendingStates.TryGetValue(device, out var state))
+            {
+                state = new PendingDeviceState();
+                PendingStates[device] = state;
+            }
+
+            // Input System の更新後（キューしたイベントがデバイス状態に反映された後）に
+            // シャドウ状態を破棄する
+            if (!_afterUpdateHooked)
+            {
+                InputSystem.onAfterUpdate += ClearPendingStates;
+                _afterUpdateHooked = true;
+            }
+
+            return state;
+        }
+
+        private static void ClearPendingStates()
+        {
+            PendingStates.Clear();
+            if (_afterUpdateHooked)
+            {
+                InputSystem.onAfterUpdate -= ClearPendingStates;
+                _afterUpdateHooked = false;
+            }
+        }
+
+        /// <summary>
+        /// 同一フレーム内でキュー済みの変更をイベントに上書き適用する
+        /// </summary>
+        private static void ApplyPendingState(InputDevice device, InputEventPtr eventPtr)
+        {
+            if (!PendingStates.TryGetValue(device, out var state)) return;
+
+            foreach (var kv in state.FloatValues)
+            {
+                kv.Key.WriteValueIntoEvent(kv.Value, eventPtr);
+            }
+
+            if (state.Position.HasValue && device is Mouse mouseDevice)
+            {
+                mouseDevice.position.WriteValueIntoEvent(state.Position.Value, eventPtr);
+            }
+        }
+
+        /// <summary>
+        /// シャドウ状態を反映した StateEvent を構築してキューする。
+        /// control / position の変更はシャドウ状態にも記録される。
+        /// </summary>
+        private static void QueueStateWithPending(InputDevice device, InputControl<float> control, float value, Vector2? position)
+        {
+            var pending = GetOrCreatePendingState(device);
+            if (position.HasValue) pending.Position = position.Value;
+            if (control != null) pending.FloatValues[control] = value;
+
+            using (StateEvent.From(device, out var eventPtr))
+            {
+                ApplyPendingState(device, eventPtr);
+                InputSystem.QueueEvent(eventPtr);
+            }
+        }
+
+        #endregion
+
         #region Keyboard
 
         public InputSimulationResult KeyDown(string key)
@@ -42,11 +126,7 @@ namespace UniForge.Tools.Mutations.InputSimulation
             if (keyControl == null)
                 return InputSimulationResult.Fail($"Invalid key name: {key}");
 
-            using (StateEvent.From(keyboard, out var eventPtr))
-            {
-                keyControl.WriteValueIntoEvent(1f, eventPtr);
-                InputSystem.QueueEvent(eventPtr);
-            }
+            QueueStateWithPending(keyboard, keyControl, 1f, null);
 
             return InputSimulationResult.Ok("key_down", $"Key '{key}' pressed down", $"Simulated key down: {key}", Name);
         }
@@ -63,11 +143,7 @@ namespace UniForge.Tools.Mutations.InputSimulation
             if (keyControl == null)
                 return InputSimulationResult.Fail($"Invalid key name: {key}");
 
-            using (StateEvent.From(keyboard, out var eventPtr))
-            {
-                keyControl.WriteValueIntoEvent(0f, eventPtr);
-                InputSystem.QueueEvent(eventPtr);
-            }
+            QueueStateWithPending(keyboard, keyControl, 0f, null);
 
             return InputSimulationResult.Ok("key_up", $"Key '{key}' released", $"Simulated key up: {key}", Name);
         }
@@ -84,23 +160,17 @@ namespace UniForge.Tools.Mutations.InputSimulation
             if (keyControl == null)
                 return InputSimulationResult.Fail($"Invalid key name: {key}");
 
-            using (StateEvent.From(keyboard, out var eventPtr))
-            {
-                keyControl.WriteValueIntoEvent(1f, eventPtr);
-                InputSystem.QueueEvent(eventPtr);
-            }
+            QueueStateWithPending(keyboard, keyControl, 1f, null);
 
-            EditorApplication.delayCall += () =>
+            // durationMs 経過後にキー解放をスケジュール
+            // （ドメインリロード・エディタ終了時もフラッシュされ、stuck key を防ぐ）
+            PendingInputReleaseRegistry.Register(() =>
             {
                 if (keyboard != null && Keyboard.current == keyboard)
                 {
-                    using (StateEvent.From(keyboard, out var eventPtr))
-                    {
-                        keyControl.WriteValueIntoEvent(0f, eventPtr);
-                        InputSystem.QueueEvent(eventPtr);
-                    }
+                    QueueStateWithPending(keyboard, keyControl, 0f, null);
                 }
-            };
+            }, durationMs / 1000.0);
 
             return InputSimulationResult.Ok("key_press", $"Key '{key}' pressed for ~{durationMs}ms", $"Simulated key press: {key}", Name);
         }
@@ -126,13 +196,8 @@ namespace UniForge.Tools.Mutations.InputSimulation
             var buttonControl = GetMouseButtonControl(mouse, button);
             if (buttonControl != null)
             {
-                using (StateEvent.From(mouse, out var eventPtr))
-                {
-                    if (x.HasValue && y.HasValue)
-                        mouse.position.WriteValueIntoEvent(new Vector2(x.Value, y.Value), eventPtr);
-                    buttonControl.WriteValueIntoEvent(1f, eventPtr);
-                    InputSystem.QueueEvent(eventPtr);
-                }
+                var position = x.HasValue && y.HasValue ? new Vector2(x.Value, y.Value) : (Vector2?)null;
+                QueueStateWithPending(mouse, buttonControl, 1f, position);
             }
 
             var buttonName = GetButtonName(button);
@@ -155,13 +220,8 @@ namespace UniForge.Tools.Mutations.InputSimulation
             var buttonControl = GetMouseButtonControl(mouse, button);
             if (buttonControl != null)
             {
-                using (StateEvent.From(mouse, out var eventPtr))
-                {
-                    if (x.HasValue && y.HasValue)
-                        mouse.position.WriteValueIntoEvent(new Vector2(x.Value, y.Value), eventPtr);
-                    buttonControl.WriteValueIntoEvent(0f, eventPtr);
-                    InputSystem.QueueEvent(eventPtr);
-                }
+                var position = x.HasValue && y.HasValue ? new Vector2(x.Value, y.Value) : (Vector2?)null;
+                QueueStateWithPending(mouse, buttonControl, 0f, position);
             }
 
             var buttonName = GetButtonName(button);
@@ -182,34 +242,25 @@ namespace UniForge.Tools.Mutations.InputSimulation
             // Button down (CGEvent + QueueStateEvent)
             PostNativeMouseButton(button, true);
 
+            var clickPosition = x.HasValue && y.HasValue ? new Vector2(x.Value, y.Value) : (Vector2?)null;
+
             var buttonControl = GetMouseButtonControl(mouse, button);
             if (buttonControl != null)
             {
-                using (StateEvent.From(mouse, out var downPtr))
-                {
-                    if (x.HasValue && y.HasValue)
-                        mouse.position.WriteValueIntoEvent(new Vector2(x.Value, y.Value), downPtr);
-                    buttonControl.WriteValueIntoEvent(1f, downPtr);
-                    InputSystem.QueueEvent(downPtr);
-                }
+                QueueStateWithPending(mouse, buttonControl, 1f, clickPosition);
             }
 
-            // Button up は次フレームで
-            EditorApplication.delayCall += () =>
+            // Button up は次の update tick で
+            // （ドメインリロード・エディタ終了時もフラッシュされ、stuck button を防ぐ）
+            PendingInputReleaseRegistry.Register(() =>
             {
                 PostNativeMouseButton(button, false);
 
                 if (mouse != null && Mouse.current == mouse && buttonControl != null)
                 {
-                    using (StateEvent.From(mouse, out var upPtr))
-                    {
-                        if (x.HasValue && y.HasValue)
-                            mouse.position.WriteValueIntoEvent(new Vector2(x.Value, y.Value), upPtr);
-                        buttonControl.WriteValueIntoEvent(0f, upPtr);
-                        InputSystem.QueueEvent(upPtr);
-                    }
+                    QueueStateWithPending(mouse, buttonControl, 0f, clickPosition);
                 }
-            };
+            }, 0.0);
 
             var buttonName = GetButtonName(button);
             var positionInfo = x.HasValue && y.HasValue ? $" at ({x.Value:F1}, {y.Value:F1})" : "";
@@ -260,6 +311,8 @@ namespace UniForge.Tools.Mutations.InputSimulation
 
             using (StateEvent.From(mouse, out var eventPtr))
             {
+                // 同一フレームでキュー済みのボタン状態・位置を保持したままスクロールを反映
+                ApplyPendingState(mouse, eventPtr);
                 mouse.scroll.WriteValueIntoEvent(new Vector2(0, delta), eventPtr);
                 InputSystem.QueueEvent(eventPtr);
             }
@@ -282,12 +335,8 @@ namespace UniForge.Tools.Mutations.InputSimulation
             MacOSInputSimulator.ReenableMouseEventSuppression();
 #endif
 
-            // Input System に位置を反映
-            using (StateEvent.From(mouse, out var eventPtr))
-            {
-                mouse.position.WriteValueIntoEvent(new Vector2(x, y), eventPtr);
-                InputSystem.QueueEvent(eventPtr);
-            }
+            // Input System に位置を反映（同一フレームでキュー済みのボタン状態を保持）
+            QueueStateWithPending(mouse, null, 0f, new Vector2(x, y));
 
             // OS ネイティブの移動イベントを送信（Old Input Manager 対応）
             // WarpCursorPosition はカーソル移動のみでイベントを生成しない。

@@ -70,7 +70,7 @@ namespace UniForge.Tools.Queries
         Kind = ToolKind.Query,
         Idempotent = true)]
     [ToolOutput(typeof(GetEditorStateOutput))]
-    public partial class GetEditorStateHandler : QueryHandler
+    public class GetEditorStateHandler : QueryHandler
     {
         private static readonly ToolDefinition _definition = new()
         {

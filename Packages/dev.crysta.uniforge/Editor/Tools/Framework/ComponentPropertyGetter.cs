@@ -57,11 +57,9 @@ namespace UniForge.Tools
                             // スクリプト参照はスキップ
                             if (iterator.name == "m_Script") continue;
 
-                            var value = GetPropertyValue(iterator);
-                            if (value != null)
-                            {
-                                result.properties[iterator.name] = value;
-                            }
+                            // null（未割り当ての ObjectReference 等）もキーとして含める
+                            // （「未割り当て」と「存在しないプロパティ」を区別できるようにする。名前指定モードと同じ挙動）
+                            result.properties[iterator.name] = GetPropertyValue(iterator);
                         }
                         while (iterator.NextVisible(false));
                     }
@@ -128,11 +126,21 @@ namespace UniForge.Tools
                     return new[] { prop.colorValue.r, prop.colorValue.g, prop.colorValue.b, prop.colorValue.a };
 
                 case SerializedPropertyType.Enum:
+                {
+                    var enumIndex = prop.enumValueIndex;
+                    var enumNames = prop.enumNames;
+                    // シリアライズされた int がどの enum メンバーとも一致しない場合、
+                    // Unity は enumValueIndex を -1 にする。範囲外の場合は生の int 値をそのまま返す
+                    if (enumIndex < 0 || enumIndex >= enumNames.Length)
+                    {
+                        return prop.intValue;
+                    }
                     return new Dictionary<string, object>
                     {
-                        { "index", prop.enumValueIndex },
-                        { "name", prop.enumNames.Length > prop.enumValueIndex ? prop.enumNames[prop.enumValueIndex] : "Unknown" }
+                        { "index", enumIndex },
+                        { "name", enumNames[enumIndex] }
                     };
+                }
 
                 case SerializedPropertyType.LayerMask:
                     return prop.intValue;

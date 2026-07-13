@@ -89,6 +89,9 @@ namespace UniForge.Tools.Mutations.InputSimulation
         private const uint MOUSEEVENTF_WHEEL = 0x0800;
         private const uint MOUSEEVENTF_ABSOLUTE = 0x8000;
 
+        // ホイール 1 ノッチあたりの mouseData 値 (WHEEL_DELTA)
+        private const int WheelDelta = 120;
+
         #endregion
 
         #region Key Mappings
@@ -243,11 +246,12 @@ namespace UniForge.Tools.Mutations.InputSimulation
             // Key down
             SendKeyInput(vk, false);
 
-            // Schedule key up
-            EditorApplication.delayCall += () =>
+            // durationMs 経過後にキー解放をスケジュール
+            // （ドメインリロード・エディタ終了時もフラッシュされ、stuck key を防ぐ）
+            PendingInputReleaseRegistry.Register(() =>
             {
                 SendKeyInput(vk, true);
-            };
+            }, durationMs / 1000.0);
 
             return InputSimulationResult.Ok(
                 "key_press",
@@ -309,11 +313,12 @@ namespace UniForge.Tools.Mutations.InputSimulation
             // Mouse down
             SendMouseInput(0, 0, 0, GetMouseDownFlags(button));
 
-            // Schedule mouse up
-            EditorApplication.delayCall += () =>
+            // 次の update tick でマウス解放をスケジュール
+            // （ドメインリロード・エディタ終了時もフラッシュされ、stuck button を防ぐ）
+            PendingInputReleaseRegistry.Register(() =>
             {
                 SendMouseInput(0, 0, 0, GetMouseUpFlags(button));
-            };
+            }, 0.0);
 
             var buttonName = GetButtonName(button);
             var positionInfo = x.HasValue && y.HasValue ? $" at ({x.Value:F0}, {y.Value:F0})" : "";
@@ -340,9 +345,9 @@ namespace UniForge.Tools.Mutations.InputSimulation
 
         public InputSimulationResult MouseScroll(float delta)
         {
-            // WHEEL_DELTA is 120
-            int wheelDelta = (int)(delta);
-            SendMouseInput(0, 0, (uint)wheelDelta, MOUSEEVENTF_WHEEL);
+            // delta はノッチ数。mouseData には WHEEL_DELTA (120) 単位の値を渡す
+            int wheelAmount = (int)(delta * WheelDelta);
+            SendMouseInput(0, 0, unchecked((uint)wheelAmount), MOUSEEVENTF_WHEEL);
 
             return InputSimulationResult.Ok(
                 "mouse_scroll",

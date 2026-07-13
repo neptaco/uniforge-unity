@@ -1,6 +1,7 @@
 using System;
 using System.IO;
 using System.Text;
+using System.Threading;
 using System.Threading.Tasks;
 using UnityEngine;
 using Debug = UnityEngine.Debug;
@@ -67,9 +68,9 @@ namespace UniForge
         /// <summary>
         /// Enqueues a received message with priority-based overflow handling.
         /// </summary>
-        private void EnqueueReceivedMessage(string message)
+        private void EnqueueReceivedMessage(string message, string method)
         {
-            var priority = GetMessagePriority(message);
+            var priority = GetMessagePriority(message, method);
 
             while (_receiveQueue.Count >= MaxQueueSize)
             {
@@ -87,31 +88,32 @@ namespace UniForge
         }
 
         /// <summary>
-        /// Try to handle the message on the receive thread without going through main thread.
-        /// Handles ping/pong and busy detection.
+        /// Handle a received line on the receive thread.
+        /// daemon.ping は受信スレッド上で即 pong を返す（メインスレッドがブロック中でも応答できる）。
+        /// それ以外は必ずキューへ積み、メインスレッドがビジーな場合は unity.busy 通知を追加送信する。
+        /// メッセージを破棄することはない。
         /// </summary>
-        private bool TryHandleOnReceiveThread(string message)
+        internal void HandleReceivedLine(string message)
         {
-            if (message.Contains(MethodPing))
+            var method = ExtractTopLevelMethod(message);
+            if (method == MethodPing)
             {
                 _sendQueue.Enqueue(PongMessage, PriorityLow);
-                return true;
+                return;
             }
 
             if (IsMainThreadBusy())
             {
-                var requestId = ExtractStringField(message, "id");
-                if (requestId != null)
+                // id は文字列・数値の両方をサポート（JSON リテラルのまま埋め込む）
+                var requestId = ExtractTopLevelLiteral(message, "id");
+                if (requestId != null && requestId != "null")
                 {
-                    var busyResponse = $"{{\"jsonrpc\":\"2.0\",\"method\":\"unity.busy\",\"params\":{{\"requestId\":\"{requestId}\",\"retry_after_ms\":{BusyRetryAfterMs},\"reason\":\"Main thread is busy\"}}}}";
+                    var busyResponse = $"{{\"jsonrpc\":\"2.0\",\"method\":\"unity.busy\",\"params\":{{\"requestId\":{requestId},\"retry_after_ms\":{BusyRetryAfterMs},\"reason\":\"Main thread is busy\"}}}}";
                     _sendQueue.Enqueue(busyResponse, PriorityLow);
-                    return true;
                 }
-
-                return true;
             }
 
-            return false;
+            EnqueueReceivedMessage(message, method);
         }
 
         /// <summary>
@@ -130,15 +132,18 @@ namespace UniForge
             return json.Substring(startIndex, endIndex - startIndex);
         }
 
-        private async Task ReceiveLoopAsync()
+        // ストリームとトークンは接続時のものを引数で受け取る。
+        // フィールド参照だと再接続後の新しい接続を旧ループが触ってしまうため。
+        private async Task ReceiveLoopAsync(Stream stream, CancellationToken cancellationToken)
         {
-            var reader = new StreamReader(_stream, Encoding.UTF8);
+            var reader = new StreamReader(stream, Encoding.UTF8);
 
             try
             {
-                while (!_isDisposed && _stream != null && !_cts.Token.IsCancellationRequested)
+                while (!_isDisposed && !cancellationToken.IsCancellationRequested)
                 {
-                    var line = await reader.ReadLineAsync();
+                    // ConfigureAwait(false): 継続を Unity メインスレッドへ戻さない
+                    var line = await reader.ReadLineAsync().ConfigureAwait(false);
                     if (line == null) break;
                     if (line.Length == 0) continue;
 
@@ -148,10 +153,7 @@ namespace UniForge
                         if (line.Length == 0) continue;
                     }
 
-                    if (!TryHandleOnReceiveThread(line))
-                    {
-                        EnqueueReceivedMessage(line);
-                    }
+                    HandleReceivedLine(line);
                 }
             }
             catch (OperationCanceledException)
@@ -178,6 +180,9 @@ namespace UniForge
                     Debug.LogError($"[UniForge] Receive loop error: {ex}");
                 }
             }
+
+            // 再接続・切断によるキャンセル時は、新しい接続の状態を旧ループが壊さないよう抜ける
+            if (cancellationToken.IsCancellationRequested) return;
 
             _isConnected = false;
 

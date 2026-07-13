@@ -13,7 +13,7 @@ namespace UniForge.Tools.Mutations
         Kind = ToolKind.Mutation,
         Destructive = true,
         Idempotent = true)]
-    public partial class LoadSceneHandler : MutationHandler
+    public class LoadSceneHandler : MutationHandler
     {
         /// <summary>引数定義</summary>
         public class Args
@@ -40,11 +40,6 @@ namespace UniForge.Tools.Mutations
             public string mode;
             public string message;
         }
-
-        private ToolDefinition _definition;
-
-        public override ToolDefinition Definition
-            => _definition ??= ToolDefinitionBuilder.FromHandler<LoadSceneHandler>();
 
         protected internal override ToolResult Execute(string argsJson)
         {

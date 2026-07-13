@@ -43,15 +43,16 @@ namespace UniForge.TestRunner
         {
             var duration = (DateTime.UtcNow - _runStartTime).TotalSeconds;
             _cache.CompleteRun(_runId, duration);
-            var run = _cache.GetRun(_runId);
-            if (run != null)
-            {
-                run.passCount = result.PassCount;
-                run.failCount = result.FailCount;
-                run.skipCount = result.SkipCount;
-                run.totalCount = result.PassCount + result.FailCount + result.SkipCount;
-                run.success = result.FailCount == 0;
-            }
+
+            // スイートレベルの失敗 (OneTimeSetUp 失敗など) は leaf 結果に現れないため、
+            // RunFinished の集計で件数と成否を補正して永続化する
+            _cache.ApplyRunSummary(
+                _runId,
+                result.PassCount,
+                result.FailCount,
+                result.SkipCount,
+                result.FailCount == 0);
+
             IsCompleted = true;
 
             Debug.Log($"[TestRunner] Run finished: {_runId}, " +

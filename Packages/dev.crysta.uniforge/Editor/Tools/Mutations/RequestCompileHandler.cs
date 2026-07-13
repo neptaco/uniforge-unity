@@ -14,7 +14,7 @@ namespace UniForge.Tools.Mutations
         Kind = ToolKind.Mutation,
         Destructive = false,
         Idempotent = true)]
-    public partial class RequestCompileHandler : CompilationWaitMutationHandler
+    public class RequestCompileHandler : CompilationWaitMutationHandler
     {
         /// <summary>引数定義</summary>
         public class Args
@@ -28,11 +28,6 @@ namespace UniForge.Tools.Mutations
             [ToolParameter("Timeout in milliseconds when waiting for completion", Default = 30000)]
             public int timeout;
         }
-
-        private ToolDefinition _definition;
-
-        public override ToolDefinition Definition
-            => _definition ??= ToolDefinitionBuilder.FromHandler<RequestCompileHandler>();
 
         protected internal override ToolResult Execute(string argsJson)
         {

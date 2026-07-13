@@ -15,7 +15,7 @@ namespace UniForge.Tools.Mutations
         Kind = ToolKind.Mutation,
         Destructive = false,
         Idempotent = false)]
-    public partial class PrefabStageHandler : MutationHandler
+    public class PrefabStageHandler : MutationHandler
     {
         /// <summary>引数定義</summary>
         public class Args
@@ -47,11 +47,6 @@ namespace UniForge.Tools.Mutations
             public int? root_instance_id;
             public string message;
         }
-
-        private ToolDefinition _definition;
-
-        public override ToolDefinition Definition
-            => _definition ??= ToolDefinitionBuilder.FromHandler<PrefabStageHandler>();
 
         protected internal override ToolResult Execute(string argsJson)
         {
@@ -133,8 +128,14 @@ namespace UniForge.Tools.Mutations
                 AssetDatabase.OpenAsset(prefabAsset);
 
                 var stage = PrefabStageUtility.GetCurrentPrefabStage();
+                if (stage == null)
+                {
+                    // OpenAsset が成功しても Stage が開かないケースがあるため必ず検証する
+                    return ToolResult.Fail($"Prefab Stage did not open for: {assetPath}");
+                }
+
                 int? rootId = null;
-                if (stage != null && stage.prefabContentsRoot != null)
+                if (stage.prefabContentsRoot != null)
                 {
                     rootId = stage.prefabContentsRoot.GetInstanceID();
                 }

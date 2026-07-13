@@ -69,7 +69,7 @@ namespace UniForge.Tools.Queries
         Kind = ToolKind.Query,
         Idempotent = true)]
     [ToolOutput(typeof(GetGameObjectOutput))]
-    public partial class GetGameObjectHandler : QueryHandler
+    public class GetGameObjectHandler : QueryHandler
     {
         /// <summary>引数定義</summary>
         public class Args
@@ -88,17 +88,6 @@ namespace UniForge.Tools.Queries
 
             [ToolParameter("Include prefab information", Default = true)]
             public bool include_prefab_info;
-        }
-
-        private ToolDefinition _definition;
-
-        public override ToolDefinition Definition
-        {
-            get
-            {
-                _definition ??= ToolDefinitionBuilder.FromHandler<GetGameObjectHandler>();
-                return _definition;
-            }
         }
 
         protected internal override ToolResult Execute(string argsJson)
@@ -214,23 +203,10 @@ namespace UniForge.Tools.Queries
                         type = comp.GetType().Name
                     };
 
-                    // Behaviour の enabled プロパティ
-                    if (comp is Behaviour behaviour)
-                    {
-                        compInfo.enabled = behaviour.enabled;
-                    }
-                    else if (comp is Renderer renderer)
-                    {
-                        compInfo.enabled = renderer.enabled;
-                    }
-                    else if (comp is Collider collider)
-                    {
-                        compInfo.enabled = collider.enabled;
-                    }
-                    else
-                    {
-                        compInfo.enabled = true; // Transform など enabled がないものは true
-                    }
+                    // enabled プロパティ（対応型は ComponentEnabledUtility に集約、書き込み側と対応を揃える）
+                    compInfo.enabled = ComponentEnabledUtility.TryGetEnabled(comp, out var compEnabled)
+                        ? compEnabled
+                        : true; // Transform など enabled がないものは true
 
                     components.Add(compInfo);
                 }

@@ -16,7 +16,7 @@ namespace UniForge.Tools.Mutations
         Kind = ToolKind.Mutation,
         Destructive = false,
         Idempotent = false)]
-    public partial class AddComponentHandler : MutationHandler
+    public class AddComponentHandler : MutationHandler
     {
         /// <summary>引数定義</summary>
         public class Args
@@ -257,11 +257,6 @@ namespace UniForge.Tools.Mutations
                 }
             }
         }
-
-        private ToolDefinition _definition;
-
-        public override ToolDefinition Definition
-            => _definition ??= ToolDefinitionBuilder.FromHandler<AddComponentHandler>();
 
         /// <summary>
         /// コンポーネント型名から Type を解決（外部からも利用可能）

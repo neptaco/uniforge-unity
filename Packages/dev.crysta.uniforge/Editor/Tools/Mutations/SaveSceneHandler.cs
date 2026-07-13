@@ -17,7 +17,7 @@ namespace UniForge.Tools.Mutations
         Kind = ToolKind.Mutation,
         Destructive = false,
         Idempotent = true)]
-    public partial class SaveSceneHandler : MutationHandler
+    public class SaveSceneHandler : MutationHandler
     {
         /// <summary>引数定義</summary>
         public class Args
@@ -39,11 +39,6 @@ namespace UniForge.Tools.Mutations
             public bool active_scene_is_dirty_after_save;
             public bool[] loaded_scenes_dirty_after_save;
         }
-
-        private ToolDefinition _definition;
-
-        public override ToolDefinition Definition
-            => _definition ??= ToolDefinitionBuilder.FromHandler<SaveSceneHandler>();
 
 #if UNITY_INCLUDE_TESTS
         internal static Func<bool> PlayModeActiveOverrideForTests;
@@ -73,28 +68,10 @@ namespace UniForge.Tools.Mutations
             var sceneName = args.GetString("scene");
             var saveAsPath = args.GetString("save_as_path");
 
-            // シーン取得
-            Scene scene;
-            if (!string.IsNullOrEmpty(sceneName))
+            // シーン取得（Prefab Stage の保存は prefab-stage ツールの責務なので Stage は見ない）
+            if (!SceneHelper.TryResolveScene(sceneName, includePrefabStage: false, out var scene, out var sceneError))
             {
-                scene = SceneManager.GetSceneByName(sceneName);
-                if (!scene.IsValid())
-                {
-                    scene = SceneManager.GetSceneByPath(sceneName);
-                }
-                if (!scene.IsValid())
-                {
-                    return ToolResult.Fail($"Scene not found: {sceneName}");
-                }
-            }
-            else
-            {
-                scene = SceneManager.GetActiveScene();
-            }
-
-            if (!scene.isLoaded)
-            {
-                return ToolResult.Fail($"Scene is not loaded: {scene.name}");
+                return ToolResult.Fail(sceneError);
             }
 
             bool saved;

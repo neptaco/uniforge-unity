@@ -278,11 +278,12 @@ namespace UniForge.Tools.Mutations.InputSimulation
             // Key down
             PostKeyEvent(keyCode, true);
 
-            // Schedule key up
-            EditorApplication.delayCall += () =>
+            // durationMs 経過後にキー解放をスケジュール
+            // （ドメインリロード・エディタ終了時もフラッシュされ、stuck key を防ぐ）
+            PendingInputReleaseRegistry.Register(() =>
             {
                 PostKeyEvent(keyCode, false);
-            };
+            }, durationMs / 1000.0);
 
             return InputSimulationResult.Ok(
                 "key_press",
@@ -338,11 +339,12 @@ namespace UniForge.Tools.Mutations.InputSimulation
             // Mouse down
             PostMouseEvent(GetMouseDownEventType(button), position, cgButton);
 
-            // Schedule mouse up
-            EditorApplication.delayCall += () =>
+            // 次の update tick でマウス解放をスケジュール
+            // （ドメインリロード・エディタ終了時もフラッシュされ、stuck button を防ぐ）
+            PendingInputReleaseRegistry.Register(() =>
             {
                 PostMouseEvent(GetMouseUpEventType(button), position, cgButton);
-            };
+            }, 0.0);
 
             var buttonName = GetButtonName(button);
             var positionInfo = $" at ({position.x:F0}, {position.y:F0})";
@@ -735,8 +737,15 @@ namespace UniForge.Tools.Mutations.InputSimulation
 
         private CGPoint GetMousePosition(float? x, float? y)
         {
-            // TODO: Get current mouse position if not specified
-            return new CGPoint(x ?? 0, y ?? 0);
+            if (x.HasValue && y.HasValue)
+            {
+                return new CGPoint(x.Value, y.Value);
+            }
+
+            // 座標が未指定の場合は現在のカーソル位置で補完（Windows 実装と同じ挙動）
+            // CGEventCreate(NULL) + CGEventGetLocation で取得（finally で CFRelease される）
+            var current = GetCurrentCursorPosition();
+            return new CGPoint(x ?? current.x, y ?? current.y);
         }
 
         private int GetMouseDownEventType(int button)

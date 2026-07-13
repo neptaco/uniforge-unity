@@ -14,7 +14,7 @@ namespace UniForge.Tools.Mutations
         Kind = ToolKind.Mutation,
         Destructive = true,
         Idempotent = true)]
-    public partial class RemoveComponentHandler : MutationHandler
+    public class RemoveComponentHandler : MutationHandler
     {
         /// <summary>引数定義</summary>
         public class Args
@@ -42,11 +42,6 @@ namespace UniForge.Tools.Mutations
             public int removed_count;
             public string error;
         }
-
-        private ToolDefinition _definition;
-
-        public override ToolDefinition Definition
-            => _definition ??= ToolDefinitionBuilder.FromHandler<RemoveComponentHandler>();
 
         protected internal override ToolResult Execute(string argsJson)
         {
@@ -97,46 +92,38 @@ namespace UniForge.Tools.Mutations
 
             var go = resolveResult.GameObject;
 
-            // コンポーネントを検索
-            var components = go.GetComponents<Component>();
+            // コンポーネントを検索（名前照合は ComponentLookup に集約）
+            var matches = ComponentLookup.FindComponents(go, op.component_type);
             int removedCount = 0;
             string actualTypeName = null;
 
-            foreach (var component in components)
+            foreach (var component in matches)
             {
-                if (component == null) continue; // Missing script
-
                 var typeName = component.GetType().Name;
-                var fullTypeName = component.GetType().FullName;
+                actualTypeName = typeName;
 
-                if (typeName.Equals(op.component_type, StringComparison.OrdinalIgnoreCase) ||
-                    fullTypeName.Equals(op.component_type, StringComparison.OrdinalIgnoreCase))
+                try
                 {
-                    actualTypeName = typeName;
+                    Undo.DestroyObjectImmediate(component);
+                    removedCount++;
 
-                    try
+                    if (!op.remove_all)
                     {
-                        Undo.DestroyObjectImmediate(component);
-                        removedCount++;
-
-                        if (!op.remove_all)
-                        {
-                            break;
-                        }
+                        break;
                     }
-                    catch (Exception ex)
+                }
+                catch (Exception ex)
+                {
+                    // 依存関係のエラーなど
+                    return new RemoveResult
                     {
-                        // 依存関係のエラーなど
-                        return new RemoveResult
-                        {
-                            success = false,
-                            instance_id = go.GetInstanceID(),
-                            component_type = typeName,
-                            removed_count = removedCount,
-                            error = $"Failed to remove {typeName}: {ex.Message}. " +
-                                "This may be due to other components depending on it (RequireComponent)."
-                        };
-                    }
+                        success = false,
+                        instance_id = go.GetInstanceID(),
+                        component_type = typeName,
+                        removed_count = removedCount,
+                        error = $"Failed to remove {typeName}: {ex.Message}. " +
+                            "This may be due to other components depending on it (RequireComponent)."
+                    };
                 }
             }
 

@@ -90,7 +90,14 @@ namespace UniForge
 
             public Dictionary<string, object> ParseObject()
             {
+                return ParseObject(0);
+            }
+
+            private Dictionary<string, object> ParseObject(int depth)
+            {
                 var result = new Dictionary<string, object>();
+                // Fail the parse silently when nesting exceeds MaxDepth (prevents stack overflow)
+                if (depth > MaxDepth) return result;
                 SkipWhitespace();
                 if (_pos >= _json.Length || _json[_pos] != '{') return result;
                 _pos++; // skip '{'
@@ -111,7 +118,7 @@ namespace UniForge
                     SkipWhitespace();
                     if (_pos < _json.Length && _json[_pos] == ':') _pos++;
                     SkipWhitespace();
-                    var value = ParseValue();
+                    var value = ParseValue(depth);
                     if (!string.IsNullOrEmpty(key))
                     {
                         result[key] = value;
@@ -130,15 +137,15 @@ namespace UniForge
                 return result;
             }
 
-            private object ParseValue()
+            private object ParseValue(int depth)
             {
                 SkipWhitespace();
                 if (_pos >= _json.Length) return null;
 
                 char c = _json[_pos];
                 if (c == '"') return ParseString();
-                if (c == '{') return ParseObject();
-                if (c == '[') return ParseArray();
+                if (c == '{') return ParseObject(depth + 1);
+                if (c == '[') return ParseArray(depth + 1);
                 if (c == 't') { _pos += 4; return true; }
                 if (c == 'f') { _pos += 5; return false; }
                 if (c == 'n') { _pos += 4; return null; }
@@ -163,14 +170,20 @@ namespace UniForge
                             case 'n': sb.Append('\n'); break;
                             case 'r': sb.Append('\r'); break;
                             case 't': sb.Append('\t'); break;
+                            case 'b': sb.Append('\b'); break;
+                            case 'f': sb.Append('\f'); break;
                             case '"': sb.Append('"'); break;
                             case '\\': sb.Append('\\'); break;
                             case 'u':
                                 if (_pos + 4 <= _json.Length)
                                 {
                                     var hex = _json.Substring(_pos, 4);
-                                    sb.Append((char)Convert.ToInt32(hex, 16));
                                     _pos += 4;
+                                    if (int.TryParse(hex, NumberStyles.HexNumber, CultureInfo.InvariantCulture, out var code))
+                                    {
+                                        sb.Append((char)code);
+                                    }
+                                    // Invalid hex: fail silently per lenient parse convention (drop the escape)
                                 }
                                 break;
                             default: sb.Append(escaped); break;
@@ -184,9 +197,11 @@ namespace UniForge
                 return sb.ToString();
             }
 
-            private List<object> ParseArray()
+            private List<object> ParseArray(int depth)
             {
                 var result = new List<object>();
+                // Fail the parse silently when nesting exceeds MaxDepth (prevents stack overflow)
+                if (depth > MaxDepth) return result;
                 if (_pos >= _json.Length || _json[_pos] != '[') return result;
                 _pos++; // skip '['
                 SkipWhitespace();
@@ -195,7 +210,7 @@ namespace UniForge
                 {
                     int prevPos = _pos;  // Track position for infinite loop prevention
 
-                    result.Add(ParseValue());
+                    result.Add(ParseValue(depth));
                     SkipWhitespace();
                     if (_pos >= _json.Length) break;
                     if (_json[_pos] == ']') { _pos++; break; }
@@ -310,12 +325,30 @@ namespace UniForge
                     return;
 
                 case TypeCode.Double:
-                    sb.Append(((double)value).ToString(CultureInfo.InvariantCulture));
+                {
+                    var d = (double)value;
+                    if (double.IsNaN(d) || double.IsInfinity(d))
+                    {
+                        // NaN/Infinity は JSON仕様に非対応のため null にフォールバック
+                        sb.Append("null");
+                        return;
+                    }
+                    sb.Append(d.ToString(CultureInfo.InvariantCulture));
                     return;
+                }
 
                 case TypeCode.Single:
-                    sb.Append(((float)value).ToString(CultureInfo.InvariantCulture));
+                {
+                    var f = (float)value;
+                    if (float.IsNaN(f) || float.IsInfinity(f))
+                    {
+                        // NaN/Infinity は JSON仕様に非対応のため null にフォールバック
+                        sb.Append("null");
+                        return;
+                    }
+                    sb.Append(f.ToString(CultureInfo.InvariantCulture));
                     return;
+                }
 
                 case TypeCode.Int16:
                 case TypeCode.Byte:

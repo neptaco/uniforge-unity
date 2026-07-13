@@ -19,11 +19,6 @@ namespace UniForge.Tools.Mutations
         private const int LogSnapshotLimit = 200;
         private const int StatePollIntervalMs = 250;
 
-        private ToolDefinition _definition;
-
-        public override ToolDefinition Definition
-            => _definition ??= ToolDefinitionBuilder.FromHandler<ControlPlayModeHandler>();
-
         protected internal override ToolResult Execute(string argsJson)
         {
             var args = new ToolArgsParser(argsJson);

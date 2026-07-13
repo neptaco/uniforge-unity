@@ -144,11 +144,6 @@ namespace UniForge.Tools.Mutations
             public List<string> captures;
         }
 
-        private ToolDefinition _definition;
-
-        public override ToolDefinition Definition
-            => _definition ??= ToolDefinitionBuilder.FromHandler<AutoPlayHandler>();
-
         protected internal override async Awaitable<ToolResult> ExecuteAsync(string argsJson)
         {
             var args = new ToolArgsParser(argsJson);

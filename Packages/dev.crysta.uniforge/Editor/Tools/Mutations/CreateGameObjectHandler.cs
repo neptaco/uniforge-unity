@@ -18,7 +18,7 @@ namespace UniForge.Tools.Mutations
         Destructive = false,
         Idempotent = false)]
     [ToolOutput(typeof(Output))]
-    public partial class CreateGameObjectHandler : MutationHandler
+    public class CreateGameObjectHandler : MutationHandler
     {
         /// <summary>引数定義</summary>
         public class Args
@@ -58,7 +58,7 @@ namespace UniForge.Tools.Mutations
         }
 
         /// <summary>2D プリミティブの種類</summary>
-        private enum Primitive2DType
+        internal enum Primitive2DType
         {
             None,
             Sprite_Square,
@@ -96,11 +96,6 @@ namespace UniForge.Tools.Mutations
 
         private const int MaxDepth = 10;
         private static readonly Regex TemplateRegex = new Regex(@"\$\{([^}]+)\}", RegexOptions.Compiled);
-
-        private ToolDefinition _definition;
-
-        public override ToolDefinition Definition
-            => _definition ??= ToolDefinitionBuilder.FromHandler<CreateGameObjectHandler>();
 
         protected internal override ToolResult Execute(string argsJson)
         {
@@ -481,7 +476,15 @@ namespace UniForge.Tools.Mutations
         {
             var go = new GameObject(name);
             var sr = go.AddComponent<SpriteRenderer>();
-            sr.sprite = SpritePrimitiveCache.GetSprite(type);
+            var sprite = SpritePrimitiveCache.GetSprite(type);
+            if (sprite == null)
+            {
+                // スプライトなしで success を返さない（呼び出し側の per-item catch でエラー化される）
+                UnityEngine.Object.DestroyImmediate(go);
+                throw new InvalidOperationException(
+                    $"Sprite asset could not be created or loaded at '{SpritePrimitiveCache.GetAssetPath(type)}'");
+            }
+            sr.sprite = sprite;
 
             switch (type)
             {
@@ -526,10 +529,19 @@ namespace UniForge.Tools.Mutations
 
         /// <summary>
         /// 2D プリミティブ用のスプライトキャッシュ。
-        /// 白ピクセルのスプライトを形状ごとに1つだけ生成してキャッシュする。
+        /// Sprite.Create によるメモリ上のスプライトはシーン保存/再読み込みで参照が失われるため、
+        /// PNG アセットとして Assets/UniForge/Generated に永続化し、そこからロードする。
+        /// 静的フィールドは同一ドメイン内でのルックアップ高速化のためのキャッシュにすぎず、
+        /// 真実のソースはアセットファイル。
         /// </summary>
-        private static class SpritePrimitiveCache
+        internal static class SpritePrimitiveCache
         {
+            /// <summary>生成アセットの保存先フォルダ</summary>
+            internal const string GeneratedFolder = "Assets/UniForge/Generated";
+
+            internal const string SquareSpriteAssetPath = GeneratedFolder + "/UniForgeSquareSprite.png";
+            internal const string CircleSpriteAssetPath = GeneratedFolder + "/UniForgeCircleSprite.png";
+
             private static Sprite _squareSprite;
             private static Sprite _circleSprite;
 
@@ -544,18 +556,20 @@ namespace UniForge.Tools.Mutations
                 }
             }
 
+            public static string GetAssetPath(Primitive2DType type)
+            {
+                return type == Primitive2DType.Sprite_Circle ? CircleSpriteAssetPath : SquareSpriteAssetPath;
+            }
+
             private static Sprite GetSquareSprite()
             {
                 if (_squareSprite != null) return _squareSprite;
 
-                var tex = new Texture2D(4, 4);
-                var pixels = new Color[16];
-                for (int i = 0; i < 16; i++) pixels[i] = Color.white;
-                tex.SetPixels(pixels);
-                tex.filterMode = FilterMode.Point;
-                tex.Apply();
-                _squareSprite = Sprite.Create(tex, new Rect(0, 0, 4, 4), new Vector2(0.5f, 0.5f), 4f);
-                _squareSprite.name = "UniForge_Square";
+                _squareSprite = LoadOrCreateSpriteAsset(
+                    SquareSpriteAssetPath,
+                    GenerateSquareTexture,
+                    pixelsPerUnit: 4f,
+                    filterMode: FilterMode.Point);
                 return _squareSprite;
             }
 
@@ -563,6 +577,87 @@ namespace UniForge.Tools.Mutations
             {
                 if (_circleSprite != null) return _circleSprite;
 
+                _circleSprite = LoadOrCreateSpriteAsset(
+                    CircleSpriteAssetPath,
+                    GenerateCircleTexture,
+                    pixelsPerUnit: 64f,
+                    filterMode: FilterMode.Bilinear);
+                return _circleSprite;
+            }
+
+            /// <summary>
+            /// スプライトアセットをロードし、存在しなければ PNG として生成してインポートする。
+            /// </summary>
+            private static Sprite LoadOrCreateSpriteAsset(
+                string assetPath, Func<Texture2D> generateTexture, float pixelsPerUnit, FilterMode filterMode)
+            {
+                // 既存アセットを再利用（ファイル名は固定なので冪等）
+                var existing = AssetDatabase.LoadAssetAtPath<Sprite>(assetPath);
+                if (existing != null) return existing;
+
+                // カレントディレクトリに依存しないよう、プロジェクトルート基準の絶対パスで扱う
+                var projectRoot = System.IO.Path.GetDirectoryName(Application.dataPath);
+                var fullPath = System.IO.Path.Combine(projectRoot, assetPath);
+
+                // ファイルは存在するが Sprite としてロードできない場合:
+                // 未インポートの可能性があるため一度インポートを試み、それでも Sprite でなければ
+                // ユーザー所有のアセットとみなして一切変更せず失敗させる（データ・設定の破壊防止）
+                if (System.IO.File.Exists(fullPath))
+                {
+                    AssetDatabase.ImportAsset(assetPath, ImportAssetOptions.ForceSynchronousImport);
+                    var imported = AssetDatabase.LoadAssetAtPath<Sprite>(assetPath);
+                    if (imported == null)
+                    {
+                        Debug.LogWarning(
+                            $"[UniForge] '{assetPath}' に Sprite としてロードできない既存アセットがあるため、" +
+                            "2D プリミティブ用スプライトを生成できません。ファイルを移動または削除してください。");
+                    }
+                    return imported;
+                }
+
+                // 初回利用時に生成先フォルダを作成
+                AssetHelper.CreateFolderRecursive(GeneratedFolder);
+
+                // テクスチャを PNG として書き出し（アセット化しないと参照がシーン保存で失われる）
+                var tex = generateTexture();
+                var png = tex.EncodeToPNG();
+                UnityEngine.Object.DestroyImmediate(tex);
+
+                System.IO.File.WriteAllBytes(fullPath, png);
+                AssetDatabase.ImportAsset(assetPath, ImportAssetOptions.ForceSynchronousImport);
+
+                ConfigureSpriteImporter(assetPath, pixelsPerUnit, filterMode);
+
+                return AssetDatabase.LoadAssetAtPath<Sprite>(assetPath);
+            }
+
+            /// <summary>Sprite としてインポートされるようインポート設定を適用する</summary>
+            private static void ConfigureSpriteImporter(string assetPath, float pixelsPerUnit, FilterMode filterMode)
+            {
+                var importer = AssetImporter.GetAtPath(assetPath) as TextureImporter;
+                if (importer == null) return;
+
+                importer.textureType = TextureImporterType.Sprite;
+                importer.spriteImportMode = SpriteImportMode.Single;
+                importer.spritePixelsPerUnit = pixelsPerUnit;
+                importer.filterMode = filterMode;
+                importer.alphaIsTransparency = true;
+                importer.mipmapEnabled = false;
+                importer.SaveAndReimport();
+            }
+
+            private static Texture2D GenerateSquareTexture()
+            {
+                var tex = new Texture2D(4, 4);
+                var pixels = new Color[16];
+                for (int i = 0; i < 16; i++) pixels[i] = Color.white;
+                tex.SetPixels(pixels);
+                tex.Apply();
+                return tex;
+            }
+
+            private static Texture2D GenerateCircleTexture()
+            {
                 int size = 64;
                 var tex = new Texture2D(size, size);
                 float center = size / 2f;
@@ -577,11 +672,8 @@ namespace UniForge.Tools.Mutations
                     }
                 }
 
-                tex.filterMode = FilterMode.Bilinear;
                 tex.Apply();
-                _circleSprite = Sprite.Create(tex, new Rect(0, 0, size, size), new Vector2(0.5f, 0.5f), size);
-                _circleSprite.name = "UniForge_Circle";
-                return _circleSprite;
+                return tex;
             }
         }
     }

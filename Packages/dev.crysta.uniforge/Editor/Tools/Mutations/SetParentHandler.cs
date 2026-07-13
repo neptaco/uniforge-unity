@@ -13,7 +13,7 @@ namespace UniForge.Tools.Mutations
         Kind = ToolKind.Mutation,
         Destructive = false,
         Idempotent = true)]
-    public partial class SetParentHandler : MutationHandler
+    public class SetParentHandler : MutationHandler
     {
         /// <summary>引数定義</summary>
         public class Args
@@ -45,11 +45,6 @@ namespace UniForge.Tools.Mutations
             public string new_path;
             public string error;
         }
-
-        private ToolDefinition _definition;
-
-        public override ToolDefinition Definition
-            => _definition ??= ToolDefinitionBuilder.FromHandler<SetParentHandler>();
 
         protected internal override ToolResult Execute(string argsJson)
         {

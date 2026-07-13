@@ -2,9 +2,11 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Text.RegularExpressions;
+using System.Threading.Tasks;
 using UnityEditor;
 using UnityEngine;
 using UnityEngine.EventSystems;
+using UnityEngine.SceneManagement;
 using UnityEngine.UI;
 using UniForge.Tools.Queries;
 using UniForge.Tools.Mutations;
@@ -108,7 +110,9 @@ namespace UniForge.Services
             if (IsAsyncAction(actionLower))
                 return await ExecuteAsyncStep(args, actionLower, "all", 50, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
 
-            var result = ExecuteActionCore(args);
+            var result = IsGestureAction(actionLower)
+                ? await ExecuteGestureActionAsync(args, actionLower)
+                : ExecuteActionCore(args);
             if (!result.Success) return result;
 
             var waitMs = GetRequestedWaitMs(args, actionLower);
@@ -161,7 +165,9 @@ namespace UniForge.Services
                 }
                 else
                 {
-                    result = ExecuteActionCore(args);
+                    result = IsGestureAction(actionLower)
+                        ? await ExecuteGestureActionAsync(args, actionLower)
+                        : ExecuteActionCore(args);
                     if (result.Success)
                     {
                         var waitMs = GetRequestedWaitMs(args, actionLower);
@@ -221,12 +227,112 @@ namespace UniForge.Services
         }
 
         // ---------------------------------------------------------------
+        //  Realtime delay
+        // ---------------------------------------------------------------
+
+        /// <summary>
+        /// EditorApplication.update 駆動の実時間待機。
+        /// Awaitable.WaitForSecondsAsync はスケールされたゲーム時間に依存するため、
+        /// Time.timeScale=0・エディタ一時停止・非再生時には再開されず、
+        /// タイムアウト判定が再評価されない。このヘルパーは壁時計
+        /// （EditorApplication.timeSinceStartup）基準で進むため、どの状態でも確実に進行する。
+        /// </summary>
+        private static Task DelayRealtimeAsync(int ms)
+        {
+            var tcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            var deadline = EditorApplication.timeSinceStartup + Math.Max(0, ms) / 1000.0;
+
+            EditorApplication.CallbackFunction tick = null;
+            tick = () =>
+            {
+                if (EditorApplication.timeSinceStartup < deadline)
+                    return;
+
+                // 一度だけ発火し、購読解除を必ず行う
+                try
+                {
+                    EditorApplication.update -= tick;
+                }
+                finally
+                {
+                    tcs.TrySetResult(true);
+                }
+            };
+            EditorApplication.update += tick;
+            return tcs.Task;
+        }
+
+        // ---------------------------------------------------------------
         //  Async step dispatch
         // ---------------------------------------------------------------
 
         private static bool IsAsyncAction(string action)
         {
             return action is "wait_for_log" or "wait_for_object" or "wait_for_ui_state" or "capture";
+        }
+
+        /// <summary>ジェスチャ完了まで await が必要なアクションか</summary>
+        private static bool IsGestureAction(string action)
+        {
+            return action is "drag" or "long_press";
+        }
+
+        /// <summary>
+        /// drag / long_press をジェスチャ完了（MouseUp）まで待機して実行する。
+        /// ExecuteActionCore のマウス系ディスパッチの非同期版。
+        /// </summary>
+#pragma warning disable CS1998 // ENABLE_INPUT_SYSTEM 無効時は await が無い
+        private async Awaitable<StepResult> ExecuteGestureActionAsync(JsonObject args, string action)
+#pragma warning restore CS1998
+        {
+            if (!EditorApplication.isPlaying)
+                return StepResult.Fail("Requires play mode. Use control-playmode to start play mode first.");
+
+            try
+            {
+#if ENABLE_INPUT_SYSTEM
+                var simulator = GetInputSystemSimulator();
+                if (simulator == null)
+                    return StepResult.Fail("Mouse simulation requires the Input System package, but no mouse device is available.");
+
+                simulator.FocusApplication();
+
+                var coordinate = args.GetString("coordinate") ?? "screen";
+                bool isWorld = coordinate.Equals("world", StringComparison.OrdinalIgnoreCase);
+
+                var simResult = action == "drag"
+                    ? await ExecuteDragAsync(args, simulator, isWorld)
+                    : await ExecuteLongPressAsync(args, simulator, isWorld);
+
+                if (!simResult.Success)
+                    return StepResult.Fail(simResult.Error);
+
+                var logMsg = $"[UniForge] simulate-input: {action}";
+                var durationMs = args.GetNullableInt("duration_ms");
+                if (durationMs.HasValue)
+                    logMsg += $" ({durationMs}ms)";
+                Debug.Log(logMsg);
+
+                return new StepResult
+                {
+                    Success = true,
+                    Action = simResult.Action,
+                    Details = simResult.Details,
+                    Message = simResult.Message,
+                    SimulatorType = simResult.SimulatorType,
+                    hit_ui = GetPrimaryUiHit(args, action),
+                    ui_hits = GetUiHits(args, action)
+                };
+#else
+                return StepResult.Fail(
+                    "Mouse simulation requires the Unity Input System package (com.unity.inputsystem). " +
+                    "Install it using the package-manager tool: action='add', package_id='com.unity.inputsystem'");
+#endif
+            }
+            catch (Exception ex)
+            {
+                return StepResult.Fail($"Failed to simulate input: {ex.Message}");
+            }
         }
 
         private async Awaitable<StepResult> ExecuteAsyncStep(
@@ -316,7 +422,7 @@ namespace UniForge.Services
                     };
                 }
 
-                await Awaitable.WaitForSecondsAsync(pollMs / 1000f);
+                await DelayRealtimeAsync(pollMs);
             }
 
             return StepResult.Fail(
@@ -363,7 +469,7 @@ namespace UniForge.Services
                     };
                 }
 
-                await Awaitable.WaitForSecondsAsync(pollMs / 1000f);
+                await DelayRealtimeAsync(pollMs);
             }
 
             return StepResult.Fail(
@@ -377,12 +483,88 @@ namespace UniForge.Services
                 return GameObject.Find(path);
             }
 
-            // 名前検索（非アクティブも含む）
-            var all = Resources.FindObjectsOfTypeAll<GameObject>();
-            foreach (var go in all)
+            // 名前検索（非アクティブも含む）: ロード済みシーンのルートから再帰探索する。
+            // Resources.FindObjectsOfTypeAll はアセットやエディタ内部オブジェクトまで
+            // 全列挙するため、ポーリングごとに呼ぶには重すぎる。
+            for (int i = 0; i < SceneManager.sceneCount; i++)
             {
-                if (go.scene.isLoaded && go.name == name)
-                    return go;
+                var scene = SceneManager.GetSceneAt(i);
+                if (!scene.isLoaded)
+                    continue;
+
+                foreach (var root in scene.GetRootGameObjects())
+                {
+                    var found = FindInHierarchyByName(root.transform, name);
+                    if (found != null)
+                        return found;
+                }
+            }
+
+            // DontDestroyOnLoad シーンは SceneManager から列挙できないため個別に探索する
+            if (TryGetDontDestroyOnLoadScene(out var ddolScene))
+            {
+                foreach (var root in ddolScene.GetRootGameObjects())
+                {
+                    var found = FindInHierarchyByName(root.transform, name);
+                    if (found != null)
+                        return found;
+                }
+            }
+
+            return null;
+        }
+
+        // DontDestroyOnLoad シーンのハンドルキャッシュ（プレイセッション中は有効なまま）
+        private static UnityEngine.SceneManagement.Scene _dontDestroyOnLoadScene;
+
+        /// <summary>
+        /// DontDestroyOnLoad シーンを取得する（プレイモード中のみ）。
+        /// シーンは直接列挙できないため、初回のみ一時オブジェクトを経由してハンドルを取得し、
+        /// 以降はキャッシュを使う（ポーリングごとの生成コストを回避）。
+        /// </summary>
+        private static bool TryGetDontDestroyOnLoadScene(out UnityEngine.SceneManagement.Scene scene)
+        {
+            scene = default;
+            if (!Application.isPlaying)
+                return false;
+
+            if (_dontDestroyOnLoadScene.IsValid() && _dontDestroyOnLoadScene.isLoaded)
+            {
+                scene = _dontDestroyOnLoadScene;
+                return true;
+            }
+
+            GameObject probe = null;
+            try
+            {
+                probe = new GameObject("UniForge.DDOLProbe") { hideFlags = HideFlags.HideAndDontSave };
+                UnityEngine.Object.DontDestroyOnLoad(probe);
+                _dontDestroyOnLoadScene = probe.scene;
+            }
+            finally
+            {
+                if (probe != null)
+                    UnityEngine.Object.DestroyImmediate(probe);
+            }
+
+            if (!_dontDestroyOnLoadScene.IsValid())
+                return false;
+
+            scene = _dontDestroyOnLoadScene;
+            return true;
+        }
+
+        /// <summary>Transform 階層を再帰的に探索して名前一致する GameObject を返す（非アクティブも含む）</summary>
+        private static GameObject FindInHierarchyByName(Transform transform, string name)
+        {
+            if (transform.name == name)
+                return transform.gameObject;
+
+            for (int i = 0; i < transform.childCount; i++)
+            {
+                var found = FindInHierarchyByName(transform.GetChild(i), name);
+                if (found != null)
+                    return found;
             }
 
             return null;
@@ -612,6 +794,11 @@ namespace UniForge.Services
 
             var actionLower = action.ToLowerInvariant();
 
+            // drag / long_press はジェスチャ完了まで待つ必要があるため同期実行できない
+            if (IsGestureAction(actionLower))
+                return StepResult.Fail(
+                    $"'{actionLower}' requires async execution. Execute the tool through UniForgeService or ToolDispatcher.DispatchAsync.");
+
             try
             {
                 if (actionLower == "wait")
@@ -739,8 +926,7 @@ namespace UniForge.Services
             return action switch
             {
                 "tap" => ExecuteTap(args, simulator, isWorld),
-                "drag" => ExecuteDrag(args, simulator, isWorld),
-                "long_press" => ExecuteLongPress(args, simulator, isWorld),
+                // drag / long_press は非同期のみ（ExecuteGestureActionAsync 経由）
                 _ => ExecuteLowLevelMouseAction(args, action, simulator, isWorld)
             };
 #else
@@ -801,7 +987,13 @@ namespace UniForge.Services
             return simulator.MouseClick(btn, pos.x, pos.y);
         }
 
-        private static InputSimulationResult ExecuteDrag(JsonObject args, InputSystemSimulator simulator, bool isWorld)
+        /// <summary>
+        /// ドラッグ操作をジェスチャ完了（MouseUp）まで待機して実行する。
+        /// 途中で結果を返すと次のシナリオステップが進行中のジェスチャと交錯するため、
+        /// down → 分割移動 → up を await で直列に駆動する。
+        /// </summary>
+        private static async Task<InputSimulationResult> ExecuteDragAsync(
+            JsonObject args, InputSystemSimulator simulator, bool isWorld)
         {
             var fromArr = args.GetFloatArray("from");
             var toArr = args.GetFloatArray("to");
@@ -823,58 +1015,44 @@ namespace UniForge.Services
             var to = toScreen.Value;
 
             const int steps = 20;
-            float stepInterval = durationMs / 1000f / steps;
+            int stepIntervalMs = Mathf.Max(1, durationMs / steps);
 
             simulator.MouseMove(from.x, from.y);
 
-            EditorApplication.delayCall += () =>
+            // MouseDown は次のエディタフレームで発行する（旧実装の delayCall 相当）
+            await DelayRealtimeAsync(0);
+            simulator.MouseDown(btn, from.x, from.y);
+
+            try
             {
-                simulator.MouseDown(btn, from.x, from.y);
-
-                int currentStep = 0;
-                float lastStepTime = (float)EditorApplication.timeSinceStartup;
-                float timeoutTime = lastStepTime + durationMs / 1000f + 5f;
-
-                EditorApplication.CallbackFunction updateCallback = null;
-                updateCallback = () =>
+                for (int step = 1; step <= steps; step++)
                 {
-                    float now = (float)EditorApplication.timeSinceStartup;
-
-                    if (now > timeoutTime)
-                    {
-                        EditorApplication.update -= updateCallback;
-                        return;
-                    }
-
-                    if (now - lastStepTime < stepInterval) return;
-                    lastStepTime = now;
-                    currentStep++;
-
-                    if (currentStep <= steps)
-                    {
-                        float t = (float)currentStep / steps;
-                        float ix = Mathf.Lerp(from.x, to.x, t);
-                        float iy = Mathf.Lerp(from.y, to.y, t);
-                        simulator.MouseDragMove(btn, ix, iy);
-                    }
-                    else
-                    {
-                        simulator.MouseUp(btn, to.x, to.y);
-                        EditorApplication.update -= updateCallback;
-                    }
-                };
-                EditorApplication.update += updateCallback;
-            };
+                    await DelayRealtimeAsync(stepIntervalMs);
+                    float t = (float)step / steps;
+                    float ix = Mathf.Lerp(from.x, to.x, t);
+                    float iy = Mathf.Lerp(from.y, to.y, t);
+                    simulator.MouseDragMove(btn, ix, iy);
+                }
+            }
+            finally
+            {
+                // 例外時もボタンを押しっぱなしにしない
+                simulator.MouseUp(btn, to.x, to.y);
+            }
 
             return InputSimulationResult.Ok(
                 "drag",
                 $"from=({fromArr[0]},{fromArr[1]}) to=({toArr[0]},{toArr[1]}) duration={durationMs}ms coord={(isWorld ? "world" : "screen")}",
-                $"Drag started ({steps} steps over {durationMs}ms)",
+                $"Drag completed ({steps} steps over {durationMs}ms)",
                 simulator.Name
             );
         }
 
-        private static InputSimulationResult ExecuteLongPress(JsonObject args, InputSystemSimulator simulator, bool isWorld)
+        /// <summary>
+        /// 長押し操作をジェスチャ完了（MouseUp）まで待機して実行する。
+        /// </summary>
+        private static async Task<InputSimulationResult> ExecuteLongPressAsync(
+            JsonObject args, InputSystemSimulator simulator, bool isWorld)
         {
             var screenPos = ResolveScreenPosition(args, isWorld);
             if (screenPos == null)
@@ -887,31 +1065,20 @@ namespace UniForge.Services
             simulator.MouseMove(pos.x, pos.y);
             simulator.MouseDown(btn, pos.x, pos.y);
 
-            float pressEndTime = (float)EditorApplication.timeSinceStartup + durationMs / 1000f;
-            float pressTimeoutTime = pressEndTime + 5f;
-            EditorApplication.CallbackFunction releaseCallback = null;
-            releaseCallback = () =>
+            try
             {
-                float now = (float)EditorApplication.timeSinceStartup;
-
-                if (now > pressTimeoutTime)
-                {
-                    EditorApplication.update -= releaseCallback;
-                    return;
-                }
-
-                if (now >= pressEndTime)
-                {
-                    simulator.MouseUp(btn, pos.x, pos.y);
-                    EditorApplication.update -= releaseCallback;
-                }
-            };
-            EditorApplication.update += releaseCallback;
+                await DelayRealtimeAsync(durationMs);
+            }
+            finally
+            {
+                // 例外時もボタンを押しっぱなしにしない
+                simulator.MouseUp(btn, pos.x, pos.y);
+            }
 
             return InputSimulationResult.Ok(
                 "long_press",
                 $"screen_pos=({pos.x:F1},{pos.y:F1}) duration={durationMs}ms",
-                $"Long press started ({durationMs}ms)",
+                $"Long press completed ({durationMs}ms)",
                 simulator.Name
             );
         }
@@ -1177,7 +1344,7 @@ namespace UniForge.Services
                     };
                 }
 
-                await Awaitable.WaitForSecondsAsync(pollMs / 1000f);
+                await DelayRealtimeAsync(pollMs);
 
                 // GameObject が破棄された場合のハンドリング
                 if (go == null)
