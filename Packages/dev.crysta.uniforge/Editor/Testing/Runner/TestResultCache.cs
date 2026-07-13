@@ -226,6 +226,28 @@ namespace UniForge.TestRunner
             }
         }
 
+        /// <summary>
+        /// 単一 run のファイルのみ書き込む（index や他の run は変更しない）。
+        /// run が既に Save 済みの index に含まれていることが前提。
+        /// </summary>
+        internal static void SaveRun(TestRunRecord run)
+        {
+            if (run == null || string.IsNullOrEmpty(run.runId))
+            {
+                return;
+            }
+
+            try
+            {
+                Directory.CreateDirectory(BaseDirectoryPath);
+                WriteJsonAtomic(GetRunFilePath(run.runId), JsonUtility.ToJson(run, false));
+            }
+            catch (Exception ex)
+            {
+                Debug.LogWarning($"[TestRunner] Failed to persist test run '{run.runId}': {ex.Message}");
+            }
+        }
+
         internal static void ClearAll()
         {
             try
@@ -397,11 +419,17 @@ namespace UniForge.TestRunner
         {
             EnsureLoaded();
             var run = GetRun(runId);
-            if (run != null)
+            if (run == null || run.completed)
             {
-                run.results.Add(result);
-                Persist();
+                // 完了/中断済みの run に遅延して届いた結果は無視する
+                return;
             }
+
+            run.results.Add(result);
+
+            // 結果ごとに全 run + index を書き直すと O(N^2) のメインスレッド I/O になるため、
+            // 現在の run のファイルのみ書き込む（index には CreateRun 時点で登録済み）
+            PersistRun(run);
         }
 
         /// <summary>
@@ -413,6 +441,14 @@ namespace UniForge.TestRunner
             var run = GetRun(runId);
             if (run != null)
             {
+                // timeout などで最終的に中断された run を遅延した RunFinished が
+                // 上書きしないようにガードする
+                // (domain reload による中断は実行再開後の完了で上書きされる想定なので除外)
+                if (IsFinallyAborted(run))
+                {
+                    return;
+                }
+
                 run.completed = true;
                 run.endTime = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
                 run.durationSeconds = durationSeconds;
@@ -453,6 +489,29 @@ namespace UniForge.TestRunner
 
                 Persist();
             }
+        }
+
+        /// <summary>
+        /// RunFinished のスイートレベル集計（OneTimeSetUp 失敗など leaf 結果に現れない失敗を含む）で
+        /// run の件数と成否を補正し、永続化する。
+        /// </summary>
+        public void ApplyRunSummary(string runId, int passCount, int failCount, int skipCount, bool success)
+        {
+            EnsureLoaded();
+            var run = GetRun(runId);
+            if (run == null || run.aborted)
+            {
+                // 中断済みの run の集計は補正しない（timeout 中断後の遅延 RunFinished 対策）
+                return;
+            }
+
+            run.passCount = passCount;
+            run.failCount = failCount;
+            run.skipCount = skipCount;
+            run.totalCount = passCount + failCount + skipCount;
+            run.success = success;
+
+            PersistRun(run);
         }
 
         /// <summary>
@@ -540,6 +599,22 @@ namespace UniForge.TestRunner
             _loaded = true;
             _loadedBaseDirectory = TestRunPersistence.BaseDirectoryPath;
             TestRunPersistence.Save(_runs, _currentRunId);
+        }
+
+        /// <summary>
+        /// 対象の run のファイルのみ永続化する（index や他の run は書き換えない）
+        /// </summary>
+        private void PersistRun(TestRunRecord run)
+        {
+            _loaded = true;
+            _loadedBaseDirectory = TestRunPersistence.BaseDirectoryPath;
+            TestRunPersistence.SaveRun(run);
+        }
+
+        private static bool IsFinallyAborted(TestRunRecord run)
+        {
+            return run.aborted &&
+                   !string.Equals(run.abortedReason, DomainReloadAbortReason, StringComparison.Ordinal);
         }
 
         private static TestRunRecord CloneRun(TestRunRecord run)

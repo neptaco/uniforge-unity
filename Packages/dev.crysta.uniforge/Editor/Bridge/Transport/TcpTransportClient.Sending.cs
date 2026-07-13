@@ -1,6 +1,8 @@
 using System;
 using System.Buffers;
+using System.IO;
 using System.Text;
+using System.Threading;
 using System.Threading.Tasks;
 using UnityEngine;
 using Debug = UnityEngine.Debug;
@@ -9,16 +11,19 @@ namespace UniForge
 {
     public partial class TcpTransportClient
     {
-        private async Task SendLoopAsync()
+        // ストリームとトークンは接続時のものを引数で受け取る。
+        // フィールド参照だと再接続後の新しい接続を旧ループが触ってしまうため。
+        private async Task SendLoopAsync(Stream stream, CancellationToken cancellationToken)
         {
             const int BufferSize = 8192;
             var buffer = ArrayPool<byte>.Shared.Rent(BufferSize);
             bool shouldReconnect = false;
             try
             {
-                while (!_isDisposed && _stream != null && !_cts.Token.IsCancellationRequested)
+                while (!_isDisposed && !cancellationToken.IsCancellationRequested)
                 {
-                    await _sendQueue.WaitForEnqueueAsync(_cts.Token);
+                    // ConfigureAwait(false): 継続を Unity メインスレッドへ戻さない
+                    await _sendQueue.WaitForEnqueueAsync(cancellationToken).ConfigureAwait(false);
 
                     int offset = 0;
                     bool anyWritten = false;
@@ -31,7 +36,7 @@ namespace UniForge
                         {
                             if (offset > 0)
                             {
-                                await _stream.WriteAsync(buffer, 0, offset, _cts.Token);
+                                await stream.WriteAsync(buffer, 0, offset, cancellationToken).ConfigureAwait(false);
                                 offset = 0;
                             }
                             var largeBuffer = ArrayPool<byte>.Shared.Rent(byteCount);
@@ -39,7 +44,7 @@ namespace UniForge
                             {
                                 int written = Encoding.UTF8.GetBytes(message, 0, message.Length, largeBuffer, 0);
                                 largeBuffer[written] = (byte)'\n';
-                                await _stream.WriteAsync(largeBuffer, 0, written + 1, _cts.Token);
+                                await stream.WriteAsync(largeBuffer, 0, written + 1, cancellationToken).ConfigureAwait(false);
                             }
                             finally
                             {
@@ -51,7 +56,7 @@ namespace UniForge
 
                         if (offset + byteCount > buffer.Length)
                         {
-                            await _stream.WriteAsync(buffer, 0, offset, _cts.Token);
+                            await stream.WriteAsync(buffer, 0, offset, cancellationToken).ConfigureAwait(false);
                             offset = 0;
                             anyWritten = true;
                         }
@@ -62,12 +67,12 @@ namespace UniForge
 
                     if (offset > 0)
                     {
-                        await _stream.WriteAsync(buffer, 0, offset, _cts.Token);
+                        await stream.WriteAsync(buffer, 0, offset, cancellationToken).ConfigureAwait(false);
                         anyWritten = true;
                     }
                     if (anyWritten)
                     {
-                        await _stream.FlushAsync(_cts.Token);
+                        await stream.FlushAsync(cancellationToken).ConfigureAwait(false);
                     }
                 }
             }
@@ -90,9 +95,11 @@ namespace UniForge
                 ArrayPool<byte>.Shared.Return(buffer);
             }
 
-            if (shouldReconnect)
+            if (shouldReconnect && !cancellationToken.IsCancellationRequested)
             {
-                await CloseConnectionAsync();
+                // CloseConnectionAsync は本ループのタスク完了を待つため、自己待機を避けて await しない
+                // （_isConnected=false は CloseConnectionAsync 冒頭で同期的に設定される）
+                _ = CloseConnectionAsync();
 
                 if (!_isDisposed && _reconnectAttempts < MaxReconnectAttempts)
                 {

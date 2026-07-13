@@ -18,7 +18,7 @@ namespace UniForge.Tools.Mutations
         Kind = ToolKind.Mutation,
         Destructive = false,
         Idempotent = true)]
-    public partial class CaptureWindowHandler : MutationHandler
+    public class CaptureWindowHandler : MutationHandler
     {
         /// <summary>引数定義</summary>
         public class Args
@@ -69,11 +69,6 @@ namespace UniForge.Tools.Mutations
             { "Animator", "UnityEditor.Graphs.AnimatorControllerTool" },
             { "Profiler", "UnityEditor.ProfilerWindow" },
         };
-
-        private ToolDefinition _definition;
-
-        public override ToolDefinition Definition
-            => _definition ??= ToolDefinitionBuilder.FromHandler<CaptureWindowHandler>();
 
         protected internal override ToolResult Execute(string argsJson)
         {
@@ -254,7 +249,8 @@ namespace UniForge.Tools.Mutations
             }
 
             RenderTexture rt = null;
-            RenderTexture prevTarget = null;
+            var prevTarget = camera.targetTexture;
+            var prevActive = RenderTexture.active;
             Texture2D texture = null;
 
             try
@@ -272,17 +268,14 @@ namespace UniForge.Tools.Mutations
                 rt.antiAliasing = 1;
 
                 // カメラのターゲットを一時的に変更
-                prevTarget = camera.targetTexture;
                 camera.targetTexture = rt;
                 camera.Render();
-                camera.targetTexture = prevTarget;
 
                 // RenderTexture から読み取り
                 RenderTexture.active = rt;
                 texture = new Texture2D(width, height, TextureFormat.RGB24, false);
                 texture.ReadPixels(new Rect(0, 0, width, height), 0, 0);
                 texture.Apply();
-                RenderTexture.active = null;
 
                 // PNG として保存
                 var pngData = texture.EncodeToPNG();
@@ -297,6 +290,9 @@ namespace UniForge.Tools.Mutations
             }
             finally
             {
+                // rt を破棄する前に、例外時も含めて必ず元の状態へ復元する
+                camera.targetTexture = prevTarget;
+                RenderTexture.active = prevActive;
                 if (texture != null) UnityEngine.Object.DestroyImmediate(texture);
                 if (rt != null) UnityEngine.Object.DestroyImmediate(rt);
             }
@@ -396,6 +392,9 @@ namespace UniForge.Tools.Mutations
 
             try
             {
+                // 復元用に現在の RenderTexture.active を先に保存（null の場合も復元対象）
+                prevActive = RenderTexture.active;
+
                 // EditorWindow.m_Parent (HostView) を取得
                 var parentField = typeof(EditorWindow).GetField("m_Parent", BindingFlags.NonPublic | BindingFlags.Instance);
                 if (parentField == null) return false;
@@ -429,7 +428,6 @@ namespace UniForge.Tools.Mutations
                 grabPixelsMethod.Invoke(hostView, new object[] { rt, rect });
 
                 // RenderTexture から読み取り
-                prevActive = RenderTexture.active;
                 RenderTexture.active = rt;
 
                 texture = new Texture2D(width, height, TextureFormat.RGB24, false);
@@ -449,11 +447,8 @@ namespace UniForge.Tools.Mutations
             }
             finally
             {
-                // 確実にクリーンアップ
-                if (prevActive != null)
-                {
-                    RenderTexture.active = prevActive;
-                }
+                // rt を破棄する前に、必ず元の RenderTexture.active へ復元する（null の場合も含む）
+                RenderTexture.active = prevActive;
                 if (texture != null)
                 {
                     UnityEngine.Object.DestroyImmediate(texture);

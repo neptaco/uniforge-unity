@@ -15,7 +15,7 @@ namespace UniForge.Tools.Mutations
         Category = ToolCategory.Editor,
         Kind = ToolKind.Mutation,
         Idempotent = false)]
-    public partial class ExecuteMenuItemHandler : IToolHandler
+    public class ExecuteMenuItemHandler : IToolHandler
     {
         public class Args
         {

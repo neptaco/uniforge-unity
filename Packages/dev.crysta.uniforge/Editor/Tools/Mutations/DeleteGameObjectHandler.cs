@@ -13,7 +13,7 @@ namespace UniForge.Tools.Mutations
         Kind = ToolKind.Mutation,
         Destructive = true,
         Idempotent = true)]
-    public partial class DeleteGameObjectHandler : MutationHandler
+    public class DeleteGameObjectHandler : MutationHandler
     {
         /// <summary>引数定義</summary>
         public class Args
@@ -32,11 +32,6 @@ namespace UniForge.Tools.Mutations
             public string error;
         }
 
-        private ToolDefinition _definition;
-
-        public override ToolDefinition Definition
-            => _definition ??= ToolDefinitionBuilder.FromHandler<DeleteGameObjectHandler>();
-
         protected internal override ToolResult Execute(string argsJson)
         {
             var args = new ToolArgsParser(argsJson);
@@ -51,33 +46,60 @@ namespace UniForge.Tools.Mutations
 
             foreach (var target in targets)
             {
-                var result = GameObjectResolver.ResolveFromTarget(target);
-
-                if (!result.Success)
+                try
                 {
+                    var result = GameObjectResolver.ResolveFromTarget(target);
+
+                    if (!result.Success)
+                    {
+                        builder.AddFailure(new DeleteResult
+                        {
+                            success = false,
+                            error = result.Error
+                        });
+                        continue;
+                    }
+
+                    var go = result.GameObject;
+                    var goName = go.name;
+                    var goInstanceId = go.GetInstanceID();
+
+                    // プレハブインスタンスの子は削除できない（DestroyImmediate が例外を投げるため事前チェック）
+                    if (PrefabUtility.IsPartOfPrefabInstance(go) && !PrefabUtility.IsOutermostPrefabInstanceRoot(go))
+                    {
+                        builder.AddFailure(new DeleteResult
+                        {
+                            success = false,
+                            name = goName,
+                            instance_id = goInstanceId,
+                            error = $"Cannot delete '{goName}': it is a child of a prefab instance. " +
+                                "Delete the outermost prefab instance root, or open the prefab in Prefab Stage to edit its contents."
+                        });
+                        continue;
+                    }
+
+                    var childCount = CountAllChildren(go.transform);
+
+                    // Undo 対応で削除
+                    Undo.DestroyObjectImmediate(go);
+
+                    builder.AddSuccess(new DeleteResult
+                    {
+                        success = true,
+                        name = goName,
+                        instance_id = goInstanceId,
+                        children_deleted = childCount
+                    });
+                }
+                catch (System.Exception ex)
+                {
+                    // 個別のエラーでバッチ全体を中断しない
                     builder.AddFailure(new DeleteResult
                     {
                         success = false,
-                        error = result.Error
+                        error = $"Unexpected error: {ex.Message}"
                     });
-                    continue;
                 }
-
-                var go = result.GameObject;
-                var goName = go.name;
-                var goInstanceId = go.GetInstanceID();
-                var childCount = CountAllChildren(go.transform);
-
-                // Undo 対応で削除
-                Undo.DestroyObjectImmediate(go);
-
-                builder.AddSuccess(new DeleteResult
-                {
-                    success = true,
-                    name = goName,
-                    instance_id = goInstanceId,
-                    children_deleted = childCount
-                });
             }
 
             return ToolResult.Ok(builder.Build("deletion"));

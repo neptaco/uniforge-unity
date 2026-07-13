@@ -110,11 +110,33 @@ namespace UniForge
 
             if (startIndex >= json.Length || json[startIndex] != '{') return "{}";
 
+            // 文字列リテラル内のブレースを数えないよう inString / エスケープ状態を追跡する
             int braceCount = 0;
             int endIndex = startIndex;
+            bool inString = false;
+            bool escaped = false;
             for (int i = startIndex; i < json.Length; i++)
             {
                 char c = json[i];
+                if (escaped)
+                {
+                    escaped = false;
+                    continue;
+                }
+
+                if (inString)
+                {
+                    if (c == '\\') escaped = true;
+                    else if (c == '"') inString = false;
+                    continue;
+                }
+
+                if (c == '"')
+                {
+                    inString = true;
+                    continue;
+                }
+
                 if (c == '{') braceCount++;
                 else if (c == '}') braceCount--;
 

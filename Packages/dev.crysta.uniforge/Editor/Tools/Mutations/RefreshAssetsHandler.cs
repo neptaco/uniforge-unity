@@ -36,7 +36,7 @@ namespace UniForge.Tools.Mutations
         Kind = ToolKind.Mutation,
         Destructive = false,
         Idempotent = true)]
-    public partial class RefreshAssetsHandler : CompilationWaitMutationHandler
+    public class RefreshAssetsHandler : CompilationWaitMutationHandler
     {
         private const int CompileStartGraceMs = 750;
 

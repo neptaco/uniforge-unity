@@ -109,27 +109,58 @@ namespace UniForge
             return count;
         }
 
-        private static Regex BuildPatternRegex(LogFilterOptions options)
+        // ポーリングループで同一パターンが何度も指定されるため、コンパイル済み Regex をキャッシュする
+        private const int PatternRegexCacheLimit = 32;
+        private static readonly object _regexCacheLock = new object();
+        private static readonly Dictionary<(string pattern, bool ignoreCase), Regex> _patternRegexCache
+            = new Dictionary<(string pattern, bool ignoreCase), Regex>();
+
+        internal static Regex BuildPatternRegex(LogFilterOptions options)
         {
             if (string.IsNullOrEmpty(options.Pattern))
             {
                 return null;
             }
 
+            var key = (options.Pattern, options.IgnoreCase);
+
+            lock (_regexCacheLock)
+            {
+                if (_patternRegexCache.TryGetValue(key, out var cached))
+                {
+                    return cached;
+                }
+            }
+
+            var regex = CreatePatternRegex(options.Pattern, options.IgnoreCase);
+
+            lock (_regexCacheLock)
+            {
+                // 上限超過時は単純にクリア（LRU 管理が必要なほどの規模ではない）
+                if (_patternRegexCache.Count >= PatternRegexCacheLimit)
+                {
+                    _patternRegexCache.Clear();
+                }
+                _patternRegexCache[key] = regex;
+            }
+
+            return regex;
+        }
+
+        private static Regex CreatePatternRegex(string pattern, bool ignoreCase)
+        {
+            var regexOptions = ignoreCase
+                ? RegexOptions.IgnoreCase | RegexOptions.Compiled
+                : RegexOptions.Compiled;
+
             try
             {
-                var regexOptions = options.IgnoreCase
-                    ? RegexOptions.IgnoreCase | RegexOptions.Compiled
-                    : RegexOptions.Compiled;
-                return new Regex(options.Pattern, regexOptions);
+                return new Regex(pattern, regexOptions);
             }
             catch (ArgumentException)
             {
-                var escaped = Regex.Escape(options.Pattern);
-                var regexOptions = options.IgnoreCase
-                    ? RegexOptions.IgnoreCase | RegexOptions.Compiled
-                    : RegexOptions.Compiled;
-                return new Regex(escaped, regexOptions);
+                // 不正な正規表現はリテラル一致として扱う
+                return new Regex(Regex.Escape(pattern), regexOptions);
             }
         }
 

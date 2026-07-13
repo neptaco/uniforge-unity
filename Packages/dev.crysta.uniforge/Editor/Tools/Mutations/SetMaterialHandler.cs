@@ -15,7 +15,7 @@ namespace UniForge.Tools.Mutations
         Kind = ToolKind.Mutation,
         Destructive = false,
         Idempotent = true)]
-    public partial class SetMaterialHandler : MutationHandler
+    public class SetMaterialHandler : MutationHandler
     {
         /// <summary>引数定義</summary>
         public class Args
@@ -43,11 +43,6 @@ namespace UniForge.Tools.Mutations
             public string material_path;
             public string error;
         }
-
-        private ToolDefinition _definition;
-
-        public override ToolDefinition Definition
-            => _definition ??= ToolDefinitionBuilder.FromHandler<SetMaterialHandler>();
 
         protected internal override ToolResult Execute(string argsJson)
         {
@@ -160,14 +155,25 @@ namespace UniForge.Tools.Mutations
             }
 
             // マテリアルを設定
-            Undo.RecordObject(renderer, "Set Material");
-
             int index = op.material_index ?? 0;
             var materials = renderer.sharedMaterials;
 
-            if (index < 0 || index >= materials.Length)
+            // 範囲外の material_index は何も変更せずエラーを返す（スロット0への暗黙の書き込みはしない）
+            if (op.material_index.HasValue && (index < 0 || index >= materials.Length))
             {
-                // インデックスが範囲外の場合は最初のマテリアルを設定
+                return new MaterialResult
+                {
+                    success = false,
+                    instance_id = go.GetInstanceID(),
+                    error = $"material_index {index} out of range (0..{materials.Length - 1})"
+                };
+            }
+
+            Undo.RecordObject(renderer, "Set Material");
+
+            if (materials.Length == 0)
+            {
+                // スロットが存在しない場合（material_index 未指定時のみ到達）は先頭に設定
                 renderer.sharedMaterial = material;
             }
             else

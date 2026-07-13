@@ -3,7 +3,6 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Threading.Tasks;
-using UnityEngine;
 
 namespace UniForge
 {
@@ -38,29 +37,15 @@ namespace UniForge
 
         internal static async Task<bool> TryStartAsync()
         {
-            var cliPath = ResolveCliPath();
+            // ブロッキングなプロセス操作でエディタを固めないよう、すべてスレッドプールで実行する
+            var cliPath = await Task.Run(() => ResolveCliPath()).ConfigureAwait(false);
             if (cliPath == null)
             {
                 return false;
             }
 
-            try
-            {
-                var psi = new ProcessStartInfo
-                {
-                    FileName = cliPath,
-                    Arguments = "daemon start",
-                    RedirectStandardOutput = true,
-                    RedirectStandardError = true,
-                    UseShellExecute = false,
-                    CreateNoWindow = true,
-                };
-                using (var proc = Process.Start(psi))
-                {
-                    proc.WaitForExit(10000);
-                }
-            }
-            catch
+            var started = await Task.Run(() => StartDaemonProcess(cliPath)).ConfigureAwait(false);
+            if (!started)
             {
                 return false;
             }
@@ -76,11 +61,40 @@ namespace UniForge
                     return true;
                 }
 
-                await Task.Delay(pollIntervalMs);
+                await Task.Delay(pollIntervalMs).ConfigureAwait(false);
                 waited += pollIntervalMs;
             }
 
             return false;
+        }
+
+        private static bool StartDaemonProcess(string cliPath)
+        {
+            try
+            {
+                var psi = new ProcessStartInfo
+                {
+                    FileName = cliPath,
+                    Arguments = "daemon start",
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                    UseShellExecute = false,
+                    CreateNoWindow = true,
+                };
+                using (var proc = Process.Start(psi))
+                {
+                    // 出力バッファ詰まりによるハングを避けるため非同期に読み捨てる
+                    _ = proc.StandardOutput.ReadToEndAsync();
+                    _ = proc.StandardError.ReadToEndAsync();
+                    proc.WaitForExit(10000);
+                }
+
+                return true;
+            }
+            catch
+            {
+                return false;
+            }
         }
 
         private static DaemonConnectionInfo ParseConnectionInfo(Dictionary<string, object> data)
@@ -202,8 +216,11 @@ namespace UniForge
                 var psi = BuildCommandLookupProcessStartInfo(commandName);
                 using (var proc = Process.Start(psi))
                 {
-                    var output = proc.StandardOutput.ReadToEnd().Trim();
+                    // stdout/stderr を非同期に読み、バッファ詰まりによるデッドロックを避ける
+                    var stdoutTask = proc.StandardOutput.ReadToEndAsync();
+                    _ = proc.StandardError.ReadToEndAsync();
                     proc.WaitForExit();
+                    var output = stdoutTask.GetAwaiter().GetResult().Trim();
                     if (proc.ExitCode == 0 && !string.IsNullOrEmpty(output))
                     {
                         using (var reader = new StringReader(output))
@@ -223,19 +240,18 @@ namespace UniForge
 
         private static ProcessStartInfo BuildCommandLookupProcessStartInfo(string commandName)
         {
-            if (Application.platform == RuntimePlatform.WindowsEditor)
+            // Application.platform はメインスレッド専用のため、スレッドプールでも動くようコンパイル時分岐にする
+#if UNITY_EDITOR_WIN
+            return new ProcessStartInfo
             {
-                return new ProcessStartInfo
-                {
-                    FileName = "cmd.exe",
-                    Arguments = $"/c where {commandName}",
-                    RedirectStandardOutput = true,
-                    RedirectStandardError = true,
-                    UseShellExecute = false,
-                    CreateNoWindow = true,
-                };
-            }
-
+                FileName = "cmd.exe",
+                Arguments = $"/c where {commandName}",
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                UseShellExecute = false,
+                CreateNoWindow = true,
+            };
+#else
             return new ProcessStartInfo
             {
                 FileName = "/bin/sh",
@@ -245,6 +261,7 @@ namespace UniForge
                 UseShellExecute = false,
                 CreateNoWindow = true,
             };
+#endif
         }
     }
 }

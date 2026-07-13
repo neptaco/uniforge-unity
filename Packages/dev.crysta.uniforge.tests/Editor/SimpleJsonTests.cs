@@ -213,6 +213,69 @@ namespace UniForge.Tests
 
         #endregion
 
+        #region Recursion Depth Limit Tests
+
+        [Test]
+        public void Parse_DeeplyNestedArray_FailsGracefullyWithoutCrash()
+        {
+            // 10000-deep nested array must not stack-overflow the editor.
+            // Expect the normal lenient parse-failure result (non-null dictionary, no exception).
+            var sb = new System.Text.StringBuilder();
+            sb.Append("{\"a\":");
+            sb.Append(new string('[', 10000));
+            sb.Append(new string(']', 10000));
+            sb.Append('}');
+
+            Dictionary<string, object> result = null;
+            Assert.DoesNotThrow(() => result = SimpleJson.Parse(sb.ToString()));
+            Assert.IsNotNull(result);
+        }
+
+        [Test]
+        public void Parse_DeeplyNestedObject_FailsGracefullyWithoutCrash()
+        {
+            var sb = new System.Text.StringBuilder();
+            for (int i = 0; i < 10000; i++) sb.Append("{\"a\":");
+            sb.Append("1");
+            for (int i = 0; i < 10000; i++) sb.Append('}');
+
+            Dictionary<string, object> result = null;
+            Assert.DoesNotThrow(() => result = SimpleJson.Parse(sb.ToString()));
+            Assert.IsNotNull(result);
+        }
+
+        #endregion
+
+        #region String Escape Tests
+
+        [Test]
+        public void Parse_EscapedBackspaceAndFormFeed_RoundTripsThroughSerialize()
+        {
+            // Serializer emits \b and \f — parser must read them back unchanged
+            var dict = new Dictionary<string, object> { { "text", "a\bc\ff" } };
+            var json = SimpleJson.Serialize(dict);
+            var parsed = SimpleJson.Parse(json);
+            Assert.AreEqual("a\bc\ff", parsed["text"]);
+        }
+
+        [Test]
+        public void Parse_ValidUnicodeEscape_ParsesCorrectly()
+        {
+            var result = SimpleJson.Parse("{\"s\": \"\\u0041\\u3042\"}");
+            Assert.AreEqual("Aあ", result["s"]);
+        }
+
+        [Test]
+        public void Parse_InvalidUnicodeEscape_DoesNotThrow()
+        {
+            // Invalid hex in \uXXXX must fail gracefully, not throw FormatException
+            Dictionary<string, object> result = null;
+            Assert.DoesNotThrow(() => result = SimpleJson.Parse("{\"s\": \"\\uZZZZ\"}"));
+            Assert.IsNotNull(result);
+        }
+
+        #endregion
+
         [Test]
         public void Parse_NullInput_ReturnsEmptyDictionary()
         {
@@ -278,6 +341,29 @@ namespace UniForge.Tests
             Assert.IsTrue(json.Contains("\"value1\""));
             Assert.IsTrue(json.Contains("\"key2\""));
             Assert.IsTrue(json.Contains("123"));
+        }
+
+        [Test]
+        public void Serialize_NaNAndInfinity_EmitsNullAndRoundTrips()
+        {
+            // NaN/Infinity are not valid JSON tokens — must serialize as null
+            var dict = new Dictionary<string, object>
+            {
+                { "f", float.NaN },
+                { "d", double.PositiveInfinity },
+                { "n", double.NegativeInfinity }
+            };
+            var json = SimpleJson.Serialize(dict);
+            StringAssert.Contains("\"f\":null", json);
+            StringAssert.Contains("\"d\":null", json);
+            StringAssert.Contains("\"n\":null", json);
+
+            // The whole output must round-trip through the parser
+            var parsed = SimpleJson.Parse(json);
+            Assert.AreEqual(3, parsed.Count);
+            Assert.IsNull(parsed["f"]);
+            Assert.IsNull(parsed["d"]);
+            Assert.IsNull(parsed["n"]);
         }
 
         #endregion

@@ -36,7 +36,7 @@ namespace UniForge.Tools.Queries
         Kind = ToolKind.Query,
         Idempotent = true)]
     [ToolOutput(typeof(SearchAssetsOutput))]
-    public partial class SearchAssetsHandler : QueryHandler
+    public class SearchAssetsHandler : QueryHandler
     {
         /// <summary>引数定義</summary>
         public class Args
@@ -55,17 +55,6 @@ namespace UniForge.Tools.Queries
 
             [ToolParameter("Maximum number of results", Default = 100)]
             public int limit;
-        }
-
-        private ToolDefinition _definition;
-
-        public override ToolDefinition Definition
-        {
-            get
-            {
-                _definition ??= ToolDefinitionBuilder.FromHandler<SearchAssetsHandler>();
-                return _definition;
-            }
         }
 
         protected internal override ToolResult Execute(string argsJson)

@@ -1,9 +1,7 @@
 using System.Collections.Generic;
 using System.Text;
 using System.Text.RegularExpressions;
-using UnityEditor.SceneManagement;
 using UnityEngine;
-using UnityEngine.SceneManagement;
 
 namespace UniForge.Tools.Queries
 {
@@ -49,7 +47,7 @@ namespace UniForge.Tools.Queries
         Kind = ToolKind.Query,
         Idempotent = true)]
     [ToolOutput(typeof(GetHierarchyOutput))]
-    public partial class GetHierarchyHandler : QueryHandler
+    public class GetHierarchyHandler : QueryHandler
     {
         /// <summary>引数定義</summary>
         public class Args
@@ -70,17 +68,6 @@ namespace UniForge.Tools.Queries
             public string name_filter;
         }
 
-        private ToolDefinition _definition;
-
-        public override ToolDefinition Definition
-        {
-            get
-            {
-                _definition ??= ToolDefinitionBuilder.FromHandler<GetHierarchyHandler>();
-                return _definition;
-            }
-        }
-
         protected internal override ToolResult Execute(string argsJson)
         {
             var args = new ToolArgsParser(argsJson);
@@ -92,28 +79,9 @@ namespace UniForge.Tools.Queries
             var nameFilter = args.GetString("name_filter");
 
             // シーン取得（Prefab Stage が開いていればそちらを優先）
-            Scene scene;
-            if (!string.IsNullOrEmpty(sceneName))
+            if (!SceneHelper.TryResolveScene(sceneName, includePrefabStage: true, out var scene, out var sceneError))
             {
-                scene = SceneManager.GetSceneByName(sceneName);
-                if (!scene.IsValid())
-                {
-                    scene = SceneManager.GetSceneByPath(sceneName);
-                }
-                if (!scene.IsValid())
-                {
-                    return ToolResult.Fail($"Scene not found: {sceneName}");
-                }
-            }
-            else
-            {
-                var prefabStage = PrefabStageUtility.GetCurrentPrefabStage();
-                scene = prefabStage != null ? prefabStage.scene : SceneManager.GetActiveScene();
-            }
-
-            if (!scene.isLoaded)
-            {
-                return ToolResult.Fail($"Scene is not loaded: {scene.name}");
+                return ToolResult.Fail(sceneError);
             }
 
             // 名前フィルタ正規表現

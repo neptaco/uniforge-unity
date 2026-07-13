@@ -20,7 +20,8 @@ namespace UniForge.Tools
     /// </summary>
     public abstract class QueryHandler : IToolHandler
     {
-        public abstract ToolDefinition Definition { get; }
+        private ToolDefinition _definition;
+        public virtual ToolDefinition Definition => _definition ??= ToolDefinitionBuilder.FromHandler(GetType());
 
         Awaitable<ToolResult> IToolHandler.ExecuteAsync(string argsJson)
             => ExecuteAsync(argsJson);
@@ -41,7 +42,8 @@ namespace UniForge.Tools
     /// </summary>
     public abstract class MutationHandler : IToolHandler
     {
-        public abstract ToolDefinition Definition { get; }
+        private ToolDefinition _definition;
+        public virtual ToolDefinition Definition => _definition ??= ToolDefinitionBuilder.FromHandler(GetType());
 
         /// <summary>IToolHandler エントリポイント — Undo ラップ付きで ExecuteAsync を呼ぶ</summary>
         async Awaitable<ToolResult> IToolHandler.ExecuteAsync(string argsJson)

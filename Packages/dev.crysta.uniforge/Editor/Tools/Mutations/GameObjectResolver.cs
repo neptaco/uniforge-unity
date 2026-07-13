@@ -94,28 +94,10 @@ namespace UniForge.Tools.Mutations
                 return Result.Fail("Either 'path' or 'instance_id' is required");
             }
 
-            // シーン取得
-            Scene scene;
-            if (!string.IsNullOrEmpty(sceneName))
+            // シーン取得（Prefab Stage が開いていればそちらを優先）
+            if (!SceneHelper.TryResolveScene(sceneName, includePrefabStage: true, out var scene, out var sceneError))
             {
-                scene = SceneManager.GetSceneByName(sceneName);
-                if (!scene.IsValid())
-                {
-                    scene = SceneManager.GetSceneByPath(sceneName);
-                }
-                if (!scene.IsValid())
-                {
-                    return Result.Fail($"Scene not found: {sceneName}");
-                }
-            }
-            else
-            {
-                scene = SceneManager.GetActiveScene();
-            }
-
-            if (!scene.isLoaded)
-            {
-                return Result.Fail($"Scene is not loaded: {scene.name}");
+                return Result.Fail(sceneError);
             }
 
             // パスから検索

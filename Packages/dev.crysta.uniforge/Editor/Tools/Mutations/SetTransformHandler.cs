@@ -13,7 +13,7 @@ namespace UniForge.Tools.Mutations
         Kind = ToolKind.Mutation,
         Destructive = false,
         Idempotent = true)]
-    public partial class SetTransformHandler : MutationHandler
+    public class SetTransformHandler : MutationHandler
     {
         /// <summary>引数定義</summary>
         public class Args
@@ -46,11 +46,6 @@ namespace UniForge.Tools.Mutations
             public float[] scale;
             public string error;
         }
-
-        private ToolDefinition _definition;
-
-        public override ToolDefinition Definition
-            => _definition ??= ToolDefinitionBuilder.FromHandler<SetTransformHandler>();
 
         protected internal override ToolResult Execute(string argsJson)
         {

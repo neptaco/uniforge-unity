@@ -13,7 +13,7 @@ namespace UniForge.Tools.Mutations
         Kind = ToolKind.Mutation,
         Destructive = false,
         Idempotent = true)]
-    public partial class SetComponentEnabledHandler : MutationHandler
+    public class SetComponentEnabledHandler : MutationHandler
     {
         /// <summary>引数定義</summary>
         public class Args
@@ -41,11 +41,6 @@ namespace UniForge.Tools.Mutations
             public bool enabled;
             public string error;
         }
-
-        private ToolDefinition _definition;
-
-        public override ToolDefinition Definition
-            => _definition ??= ToolDefinitionBuilder.FromHandler<SetComponentEnabledHandler>();
 
         protected internal override ToolResult Execute(string argsJson)
         {
@@ -98,35 +93,10 @@ namespace UniForge.Tools.Mutations
                 };
             }
 
-            // enabled プロパティを持つかチェック
+            // enabled プロパティを持つかチェック（対応型は ComponentEnabledUtility に集約）
             var actualTypeName = targetComponent.GetType().Name;
 
-            if (targetComponent is Behaviour behaviour)
-            {
-                Undo.RecordObject(behaviour, $"Set {actualTypeName} Enabled");
-                behaviour.enabled = op.enabled;
-            }
-            else if (targetComponent is Renderer renderer)
-            {
-                Undo.RecordObject(renderer, $"Set {actualTypeName} Enabled");
-                renderer.enabled = op.enabled;
-            }
-            else if (targetComponent is Collider collider)
-            {
-                Undo.RecordObject(collider, $"Set {actualTypeName} Enabled");
-                collider.enabled = op.enabled;
-            }
-            else if (targetComponent is Cloth cloth)
-            {
-                Undo.RecordObject(cloth, $"Set {actualTypeName} Enabled");
-                cloth.enabled = op.enabled;
-            }
-            else if (targetComponent is LODGroup lodGroup)
-            {
-                Undo.RecordObject(lodGroup, $"Set {actualTypeName} Enabled");
-                lodGroup.enabled = op.enabled;
-            }
-            else
+            if (!ComponentEnabledUtility.TryGetEnabled(targetComponent, out _))
             {
                 return new EnableResult
                 {
@@ -136,6 +106,9 @@ namespace UniForge.Tools.Mutations
                     error = $"Component {actualTypeName} does not have an 'enabled' property"
                 };
             }
+
+            Undo.RecordObject(targetComponent, $"Set {actualTypeName} Enabled");
+            ComponentEnabledUtility.TrySetEnabled(targetComponent, op.enabled);
 
             EditorUtility.SetDirty(go);
 

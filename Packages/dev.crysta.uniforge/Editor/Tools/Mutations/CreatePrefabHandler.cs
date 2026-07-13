@@ -14,7 +14,7 @@ namespace UniForge.Tools.Mutations
         Kind = ToolKind.Mutation,
         Destructive = false,
         Idempotent = false)]
-    public partial class CreatePrefabHandler : MutationHandler
+    public class CreatePrefabHandler : MutationHandler
     {
         /// <summary>引数定義</summary>
         public class Args
@@ -41,11 +41,6 @@ namespace UniForge.Tools.Mutations
             public bool overwritten;
             public string message;
         }
-
-        private ToolDefinition _definition;
-
-        public override ToolDefinition Definition
-            => _definition ??= ToolDefinitionBuilder.FromHandler<CreatePrefabHandler>();
 
         protected internal override ToolResult Execute(string argsJson)
         {

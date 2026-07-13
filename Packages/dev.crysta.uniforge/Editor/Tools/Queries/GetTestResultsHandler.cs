@@ -12,7 +12,7 @@ namespace UniForge.Tools.Queries
         Category = ToolCategory.Test,
         Kind = ToolKind.Query,
         Idempotent = true)]
-    public partial class GetTestResultsHandler : QueryHandler
+    public class GetTestResultsHandler : QueryHandler
     {
         public class Args
         {
@@ -57,17 +57,6 @@ namespace UniForge.Tools.Queries
             public double duration_seconds;
             public string message;
             public string stack_trace;
-        }
-
-        private ToolDefinition _definition;
-
-        public override ToolDefinition Definition
-        {
-            get
-            {
-                _definition ??= ToolDefinitionBuilder.FromHandler<GetTestResultsHandler>();
-                return _definition;
-            }
         }
 
         protected internal override ToolResult Execute(string argsJson)

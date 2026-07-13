@@ -13,7 +13,7 @@ namespace UniForge.Tools.Mutations
         Kind = ToolKind.Mutation,
         Destructive = false,
         Idempotent = true)]
-    public partial class FrameObjectHandler : MutationHandler
+    public class FrameObjectHandler : MutationHandler
     {
         /// <summary>引数定義</summary>
         public class Args
@@ -39,11 +39,6 @@ namespace UniForge.Tools.Mutations
             public int? instance_id;
             public string message;
         }
-
-        private ToolDefinition _definition;
-
-        public override ToolDefinition Definition
-            => _definition ??= ToolDefinitionBuilder.FromHandler<FrameObjectHandler>();
 
         protected internal override ToolResult Execute(string argsJson)
         {

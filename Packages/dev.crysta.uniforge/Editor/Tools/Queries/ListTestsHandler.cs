@@ -13,7 +13,7 @@ namespace UniForge.Tools.Queries
         Category = ToolCategory.Test,
         Kind = ToolKind.Query,
         Idempotent = true)]
-    public partial class ListTestsHandler : QueryHandler
+    public class ListTestsHandler : QueryHandler
     {
         public class Args
         {
@@ -41,17 +41,6 @@ namespace UniForge.Tools.Queries
             public int play_mode_count;
             public bool available;
             public string message;
-        }
-
-        private ToolDefinition _definition;
-
-        public override ToolDefinition Definition
-        {
-            get
-            {
-                _definition ??= ToolDefinitionBuilder.FromHandler<ListTestsHandler>();
-                return _definition;
-            }
         }
 
         protected internal override ToolResult Execute(string argsJson)

@@ -32,13 +32,13 @@ namespace UniForge
         private const int PriorityMedium = 1;
         internal const int PriorityHigh = 2;
 
-        // JSON-RPC method-based message markers for priority detection
-        private const string MethodExecuteTool = "\"method\":\"daemon.executeTool\"";
-        private const string MethodPing = "\"method\":\"daemon.ping\"";
-        private const string MethodRegister = "\"method\":\"unity.register\"";
-        private const string MethodToolsUpdate = "\"method\":\"unity.toolsUpdate\"";
-        private const string MethodPong = "\"method\":\"unity.pong\"";
-        private const string MethodBusy = "\"method\":\"unity.busy\"";
+        // JSON-RPC method names for priority detection
+        private const string MethodExecuteTool = "daemon.executeTool";
+        private const string MethodPing = "daemon.ping";
+        private const string MethodRegister = "unity.register";
+        private const string MethodToolsUpdate = "unity.toolsUpdate";
+        private const string MethodPong = "unity.pong";
+        private const string MethodBusy = "unity.busy";
 
         // For JSON-RPC responses (tool results)
         private const string HasResultField = "\"result\":";
@@ -47,6 +47,8 @@ namespace UniForge
         private bool _isConnecting;
         private bool _isConnected;
         private int _reconnectAttempts;
+        // 明示切断のたびに増える世代番号。ConnectAsync が待機中に切断が完了した場合の再接続を防ぐ
+        private int _disconnectEpoch;
         private string _connectedEndpoint;
         private string _connectedTransport;
         private string _lastError;
@@ -64,6 +66,11 @@ namespace UniForge
         // Timing constants
         private const int MaxReconnectExponent = 5;
         private const int BusyRetryAfterMs = 1000;
+        private const int LoopShutdownTimeoutMs = 2000;
+
+        // 送受信ループのタスク（再接続時に旧ループの完了を待つために保持する）
+        private Task _receiveLoopTask;
+        private Task _sendLoopTask;
 
         public event Action OnConnected;
         public event Action OnDisconnected;
@@ -161,27 +168,153 @@ namespace UniForge
         /// </summary>
         internal static int GetMessagePriority(string message)
         {
-            // High priority messages - critical for tool execution
-            if (message.Contains(HasResultField) ||
-                message.Contains(HasErrorField) ||
-                message.Contains(MethodRegister) ||
-                message.Contains(MethodExecuteTool) ||
-                message.Contains(MethodToolsUpdate))
+            return GetMessagePriority(message, ExtractTopLevelMethod(message));
+        }
+
+        private static int GetMessagePriority(string message, string method)
+        {
+            if (method != null)
             {
-                return PriorityHigh;
+                switch (method)
+                {
+                    // High priority messages - critical for tool execution
+                    case MethodRegister:
+                    case MethodExecuteTool:
+                    case MethodToolsUpdate:
+                        return PriorityHigh;
+
+                    // Low priority messages - can be dropped without major impact
+                    case MethodPong:
+                    case MethodBusy:
+                    case MethodPing:
+                        return PriorityLow;
+
+                    default:
+                        return PriorityMedium;
+                }
             }
 
-            // Low priority messages - can be dropped without major impact
-            if (message.Contains(MethodPong) ||
-                message.Contains(MethodBusy) ||
-                message.Contains(MethodPing))
+            // method を持たない JSON-RPC レスポンス（result/error）は高優先度
+            if (message.Contains(HasResultField) || message.Contains(HasErrorField))
             {
-                return PriorityLow;
+                return PriorityHigh;
             }
 
             // Default to medium priority
             return PriorityMedium;
         }
 
+        /// <summary>
+        /// トップレベルの "method" フィールドの文字列値を抽出する。
+        /// ネストされたオブジェクトや文字列リテラル内の出現は無視する。
+        /// </summary>
+        internal static string ExtractTopLevelMethod(string json)
+        {
+            var literal = ExtractTopLevelLiteral(json, "method");
+            if (literal == null || literal.Length < 2 || literal[0] != '"')
+            {
+                return null;
+            }
+
+            return literal.Substring(1, literal.Length - 2);
+        }
+
+        /// <summary>
+        /// トップレベルフィールドの値を JSON リテラルのまま抽出する（文字列は引用符込み）。
+        /// 文字列リテラル内・ネスト内のキーは無視する。オブジェクト・配列値は対象外（null）。
+        /// </summary>
+        internal static string ExtractTopLevelLiteral(string json, string fieldName)
+        {
+            if (string.IsNullOrEmpty(json)) return null;
+
+            int depth = 0;
+            int length = json.Length;
+            int i = 0;
+
+            while (i < length)
+            {
+                char c = json[i];
+                if (c == '"')
+                {
+                    int keyStart = i + 1;
+                    int afterKey = SkipString(json, i);
+                    if (afterKey < 0) return null;
+
+                    if (depth == 1)
+                    {
+                        int j = afterKey;
+                        while (j < length && char.IsWhiteSpace(json[j])) j++;
+                        if (j < length && json[j] == ':')
+                        {
+                            j++;
+                            while (j < length && char.IsWhiteSpace(json[j])) j++;
+
+                            bool matches = afterKey - 1 - keyStart == fieldName.Length
+                                && string.CompareOrdinal(json, keyStart, fieldName, 0, fieldName.Length) == 0;
+                            if (matches)
+                            {
+                                return ReadValueLiteral(json, j);
+                            }
+
+                            i = j;
+                            continue;
+                        }
+                    }
+
+                    i = afterKey;
+                    continue;
+                }
+
+                if (c == '{' || c == '[') depth++;
+                else if (c == '}' || c == ']') depth--;
+                i++;
+            }
+
+            return null;
+        }
+
+        /// <summary>
+        /// 開始クォート位置から文字列リテラルを読み飛ばし、閉じクォートの次のインデックスを返す。
+        /// 未終端の場合は -1。
+        /// </summary>
+        private static int SkipString(string json, int openQuoteIndex)
+        {
+            for (int i = openQuoteIndex + 1; i < json.Length; i++)
+            {
+                char c = json[i];
+                if (c == '\\')
+                {
+                    i++;
+                    continue;
+                }
+
+                if (c == '"') return i + 1;
+            }
+
+            return -1;
+        }
+
+        private static string ReadValueLiteral(string json, int start)
+        {
+            if (start >= json.Length) return null;
+
+            char c = json[start];
+            if (c == '"')
+            {
+                int end = SkipString(json, start);
+                if (end < 0) return null;
+                return json.Substring(start, end - start);
+            }
+
+            if (c == '{' || c == '[') return null;
+
+            int i = start;
+            while (i < json.Length && json[i] != ',' && json[i] != '}' && json[i] != ']' && !char.IsWhiteSpace(json[i]))
+            {
+                i++;
+            }
+
+            return i > start ? json.Substring(start, i - start) : null;
+        }
     }
 }

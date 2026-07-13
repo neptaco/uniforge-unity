@@ -47,7 +47,7 @@ namespace UniForge.Tools.Addressables
         Kind = ToolKind.Query,
         Idempotent = true)]
     [ToolOutput(typeof(GetAddressablesOutput))]
-    public partial class GetAddressablesHandler : QueryHandler
+    public class GetAddressablesHandler : QueryHandler
     {
         /// <summary>引数定義</summary>
         public class Args
@@ -63,17 +63,6 @@ namespace UniForge.Tools.Addressables
 
             [ToolParameter("Maximum number of entries to return", Default = 100)]
             public int limit;
-        }
-
-        private ToolDefinition _definition;
-
-        public override ToolDefinition Definition
-        {
-            get
-            {
-                _definition ??= ToolDefinitionBuilder.FromHandler<GetAddressablesHandler>();
-                return _definition;
-            }
         }
 
         protected internal override ToolResult Execute(string argsJson)

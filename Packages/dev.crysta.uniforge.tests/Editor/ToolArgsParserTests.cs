@@ -633,6 +633,41 @@ namespace UniForge.Tests
 
         #endregion
 
+        #region Culture Invariance Tests
+
+        private class CultureOp
+        {
+            public float ratio;
+            public double amount;
+            public int count;
+        }
+
+        [Test]
+        public void GetObjectArray_StringNumbers_ParseInvariant_UnderGermanCulture()
+        {
+            // de-DE では小数点が ',' のため、CurrentCulture 依存だと "1.5" が 15 になる
+            var original = System.Globalization.CultureInfo.CurrentCulture;
+            try
+            {
+                System.Globalization.CultureInfo.CurrentCulture = new System.Globalization.CultureInfo("de-DE");
+
+                var parser = new ToolArgsParser("{\"ops\": [{\"ratio\": \"1.5\", \"amount\": \"2.5\", \"count\": \"7\"}]}");
+                var result = parser.GetObjectArray<CultureOp>("ops");
+
+                Assert.IsNotNull(result);
+                Assert.AreEqual(1, result.Length);
+                Assert.AreEqual(1.5f, result[0].ratio, 0.0001f);
+                Assert.AreEqual(2.5, result[0].amount, 0.0001);
+                Assert.AreEqual(7, result[0].count);
+            }
+            finally
+            {
+                System.Globalization.CultureInfo.CurrentCulture = original;
+            }
+        }
+
+        #endregion
+
         #region Multiple Keys / Complex JSON Tests
 
         [Test]

@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using UnityEditor;
 using UnityEngine;
 using UniForge.Tools.Mutations;
@@ -101,11 +102,12 @@ namespace UniForge.Tools
                 switch (prop.propertyType)
                 {
                     case SerializedPropertyType.Integer:
-                        prop.intValue = Convert.ToInt32(value);
+                        // 文字列は InvariantCulture でパース（CurrentCulture に依存させない）
+                        prop.intValue = Convert.ToInt32(value, CultureInfo.InvariantCulture);
                         return true;
 
                     case SerializedPropertyType.Float:
-                        prop.floatValue = Convert.ToSingle(value);
+                        prop.floatValue = Convert.ToSingle(value, CultureInfo.InvariantCulture);
                         return true;
 
                     case SerializedPropertyType.Boolean:
@@ -162,7 +164,7 @@ namespace UniForge.Tools
                         return false;
 
                     case SerializedPropertyType.LayerMask:
-                        prop.intValue = Convert.ToInt32(value);
+                        prop.intValue = Convert.ToInt32(value, CultureInfo.InvariantCulture);
                         return true;
 
                     case SerializedPropertyType.Quaternion:
@@ -220,7 +222,7 @@ namespace UniForge.Tools
         /// <summary>
         /// ObjectReference を設定
         /// サポート形式:
-        /// - instance_id (int): EditorUtility.InstanceIDToObject で解決
+        /// - instance_id (int / long): EditorUtility.InstanceIDToObject で解決
         /// - {"$ref": "path"}: GameObject のパスから解決（シーン内またはアセットパス）
         /// - {"$ref": "path", "component": "TypeName"}: コンポーネントを解決
         /// - {"$asset": "Assets/..."}: アセットパスから直接ロード
@@ -237,35 +239,11 @@ namespace UniForge.Tools
                 return true;
             }
 
-            // instance_id (int) から解決
-            if (value is int instanceId)
+            // instance_id（数値）から解決（SimpleJson 由来の long と直接 API 呼び出しの int の両方に対応）
+            // 文字列はパスとして解釈するため除外する
+            if (!(value is string) && NumericCoercion.TryToInt64(value, out var instanceId))
             {
-                var obj = EditorUtility.InstanceIDToObject(instanceId);
-                if (obj == null)
-                {
-                    error = $"Object not found with instance_id: {instanceId}";
-                    return false;
-                }
-                prop.objectReferenceValue = obj;
-                return true;
-            }
-
-            // long を int に変換
-            if (value is long l)
-            {
-                if (l < int.MinValue || l > int.MaxValue)
-                {
-                    error = "Instance ID out of range";
-                    return false;
-                }
-                var obj = EditorUtility.InstanceIDToObject((int)l);
-                if (obj == null)
-                {
-                    error = $"Object not found with instance_id: {l}";
-                    return false;
-                }
-                prop.objectReferenceValue = obj;
-                return true;
+                return TryResolveInstanceId(prop, instanceId, out error);
             }
 
             // {"$ref": "path"}, {"$asset": "path"}, または {"instance_id": id} 形式
@@ -314,30 +292,10 @@ namespace UniForge.Tools
                 }
 
                 // instance_id キーでも対応
-                if (dict.TryGetValue("instance_id", out var idValue))
+                if (dict.TryGetValue("instance_id", out var idValue) &&
+                    NumericCoercion.TryToInt64(idValue, out var dictInstanceId))
                 {
-                    if (idValue is int id)
-                    {
-                        var obj = EditorUtility.InstanceIDToObject(id);
-                        if (obj == null)
-                        {
-                            error = $"Object not found with instance_id: {id}";
-                            return false;
-                        }
-                        prop.objectReferenceValue = obj;
-                        return true;
-                    }
-                    if (idValue is long lid)
-                    {
-                        var obj = EditorUtility.InstanceIDToObject((int)lid);
-                        if (obj == null)
-                        {
-                            error = $"Object not found with instance_id: {lid}";
-                            return false;
-                        }
-                        prop.objectReferenceValue = obj;
-                        return true;
-                    }
+                    return TryResolveInstanceId(prop, dictInstanceId, out error);
                 }
             }
 
@@ -363,6 +321,30 @@ namespace UniForge.Tools
 
             error = "ObjectReference requires instance_id (int), path (string), {\"$ref\": \"path\"}, {\"$asset\": \"path\"}, or null";
             return false;
+        }
+
+        /// <summary>
+        /// instance_id から ObjectReference を解決して設定
+        /// </summary>
+        private static bool TryResolveInstanceId(SerializedProperty prop, long instanceId, out string error)
+        {
+            error = null;
+
+            if (instanceId < int.MinValue || instanceId > int.MaxValue)
+            {
+                error = "Instance ID out of range";
+                return false;
+            }
+
+            var obj = EditorUtility.InstanceIDToObject((int)instanceId);
+            if (obj == null)
+            {
+                error = $"Object not found with instance_id: {instanceId}";
+                return false;
+            }
+
+            prop.objectReferenceValue = obj;
+            return true;
         }
 
         /// <summary>
@@ -449,10 +431,10 @@ namespace UniForge.Tools
 
                 try
                 {
-                    float r = System.Convert.ToSingle(rv);
-                    float g = System.Convert.ToSingle(gv);
-                    float b = System.Convert.ToSingle(bv);
-                    float a = dict.TryGetValue("a", out var av) ? System.Convert.ToSingle(av) : 1f;
+                    float r = System.Convert.ToSingle(rv, CultureInfo.InvariantCulture);
+                    float g = System.Convert.ToSingle(gv, CultureInfo.InvariantCulture);
+                    float b = System.Convert.ToSingle(bv, CultureInfo.InvariantCulture);
+                    float a = dict.TryGetValue("a", out var av) ? System.Convert.ToSingle(av, CultureInfo.InvariantCulture) : 1f;
                     result = new Color(r, g, b, a);
                     return true;
                 }
@@ -520,15 +502,10 @@ namespace UniForge.Tools
         {
             result = 0;
 
-            // 整数値
-            if (value is int i)
+            // 数値（enumValueIndex として扱う。文字列は名前検索のため除外）
+            if (!(value is string) && NumericCoercion.TryToInt64(value, out var numericIndex))
             {
-                result = i;
-                return true;
-            }
-            if (value is long l)
-            {
-                result = (int)l;
+                result = (int)numericIndex;
                 return true;
             }
 
@@ -558,7 +535,7 @@ namespace UniForge.Tools
                 {
                     try
                     {
-                        arr[i] = Convert.ToSingle(list[i]);
+                        arr[i] = Convert.ToSingle(list[i], CultureInfo.InvariantCulture);
                     }
                     catch
                     {

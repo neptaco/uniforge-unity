@@ -45,6 +45,10 @@ namespace UniForge.TestRunner
         private TestRunnerApi _api;
         private TestRunnerCallbacks _currentCallbacks;
 
+        // 実行中の TestRunnerApi run の guid（キャンセル用、domain reload を跨いで保持）
+        [SerializeField]
+        private string _currentExecutionGuid;
+
         // Cached test lists
         private List<TestInfo> _cachedEditModeTests;
         private List<TestInfo> _cachedPlayModeTests;
@@ -229,9 +233,11 @@ namespace UniForge.TestRunner
             }
         }
 
-        private void CollectTests(ITestAdaptor test, List<TestInfo> results, string mode)
+        private void CollectTests(ITestAdaptor test, List<TestInfo> results, string mode, string parentAssembly = null)
         {
             if (test == null) return;
+
+            var assemblyName = ResolveAssemblyName(test, parentAssembly);
 
             // Add non-assembly, non-root nodes
             if (!test.IsTestAssembly && test.Parent != null)
@@ -240,6 +246,7 @@ namespace UniForge.TestRunner
                 {
                     fullName = test.FullName,
                     displayName = test.Name,
+                    assembly = assemblyName,
                     mode = mode,
                     hasChildren = test.HasChildren,
                     childCount = test.TestCaseCount,
@@ -252,9 +259,33 @@ namespace UniForge.TestRunner
             {
                 foreach (var child in test.Children)
                 {
-                    CollectTests(child, results, mode);
+                    CollectTests(child, results, mode, assemblyName);
                 }
             }
+        }
+
+        /// <summary>
+        /// テストノードのアセンブリ名を解決する。
+        /// 型情報があればそのアセンブリ、アセンブリノード自身は名前から導出、
+        /// それ以外（namespace suite など）は親から継承する。
+        /// </summary>
+        internal static string ResolveAssemblyName(ITestAdaptor test, string parentAssembly)
+        {
+            var typeAssembly = test.TypeInfo?.Assembly?.GetName()?.Name;
+            if (!string.IsNullOrEmpty(typeAssembly))
+            {
+                return typeAssembly;
+            }
+
+            if (test.IsTestAssembly && !string.IsNullOrEmpty(test.Name))
+            {
+                var name = test.Name;
+                return name.EndsWith(".dll", StringComparison.OrdinalIgnoreCase)
+                    ? name.Substring(0, name.Length - 4)
+                    : name;
+            }
+
+            return parentAssembly;
         }
 
         /// <summary>
@@ -263,13 +294,49 @@ namespace UniForge.TestRunner
         /// <returns>Run ID for tracking</returns>
         public string StartTests(TestExecutionSettings settings)
         {
+            return StartTests(settings, out _);
+        }
+
+        /// <summary>
+        /// Start test execution
+        /// </summary>
+        /// <returns>Run ID for tracking (null on failure, with error message in <paramref name="error"/>)</returns>
+        public string StartTests(TestExecutionSettings settings, out string error)
+        {
+            error = null;
+
             if (IsRunning)
             {
-                Debug.LogWarning("[TestRunner] A test run is already in progress");
+                error = "A test run is already in progress";
+                Debug.LogWarning($"[TestRunner] {error}");
                 return null;
             }
 
             EnsureApiInitialized();
+
+            var testMode = ParseTestMode(settings.Mode);
+
+            // test_names 指定時は run 作成前に展開・検証する
+            string[] expandedNames = null;
+            if (settings.TestNames != null && settings.TestNames.Length > 0)
+            {
+                expandedNames = ExpandTestNames(settings.TestNames, testMode, out var unmatchedNames, out var cacheHasTests);
+                if (expandedNames == null || expandedNames.Length == 0)
+                {
+                    error = "Failed to expand test names - test cache not ready or no matching tests";
+                    Debug.LogError($"[TestRunner] {error}");
+                    return null;
+                }
+
+                // キャッシュにテストがあるのに一致しない名前が残っている場合は実行前に失敗させる
+                // (存在しない名前をそのまま渡すと 0 件実行が success として報告されるため)
+                if (unmatchedNames.Count > 0 && cacheHasTests)
+                {
+                    error = $"No tests matched the specified test_names: {string.Join(", ", unmatchedNames)}";
+                    Debug.LogError($"[TestRunner] {error}");
+                    return null;
+                }
+            }
 
             var cache = TestResultCache.instance;
             var run = cache.CreateRun(settings.Mode);
@@ -277,22 +344,13 @@ namespace UniForge.TestRunner
             RegisterCallbacks(run.runId, run.startTime);
 
             // Build filter
-            var testMode = ParseTestMode(settings.Mode);
             var filter = new Filter
             {
                 testMode = testMode
             };
 
-            if (settings.TestNames != null && settings.TestNames.Length > 0)
+            if (expandedNames != null)
             {
-                // Expand class names to full test names using cache
-                var expandedNames = ExpandTestNames(settings.TestNames, testMode);
-                if (expandedNames == null || expandedNames.Length == 0)
-                {
-                    Debug.LogError("[TestRunner] Failed to expand test names - cache not ready or no matching tests");
-                    cache.CompleteRun(run.runId, 0);
-                    return null;
-                }
                 filter.testNames = expandedNames;
             }
 
@@ -317,11 +375,12 @@ namespace UniForge.TestRunner
 
             try
             {
-                _api.Execute(executionSettings);
+                _currentExecutionGuid = _api.Execute(executionSettings);
             }
             catch (Exception ex)
             {
-                Debug.LogError($"[TestRunner] Failed to start tests: {ex.Message}");
+                error = $"Failed to start tests: {ex.Message}";
+                Debug.LogError($"[TestRunner] {error}");
                 cache.CompleteRun(run.runId, 0);
                 return null;
             }
@@ -329,8 +388,43 @@ namespace UniForge.TestRunner
             return run.runId;
         }
 
+        /// <summary>
+        /// 実行中の run を中断する（timeout 時など）。
+        /// TestRunnerApi 側の run が残っていればキャンセルし、cache の run 状態を破棄して
+        /// 以後の run-tests が「already in progress」で拒否され続けないようにする。
+        /// </summary>
+        public void CancelRun(string runId, string reason, double durationSeconds = 0)
+        {
+            if (string.IsNullOrEmpty(runId))
+            {
+                return;
+            }
+
+            var cache = TestResultCache.instance;
+
+            // 実行中の guid が対象の run のものであるときのみ TestRunnerApi のキャンセルを試みる
+            var isCurrentRun = string.Equals(cache.CurrentRunId, runId, StringComparison.Ordinal) &&
+                               _currentCallbacks != null &&
+                               string.Equals(_currentCallbacks.RunId, runId, StringComparison.Ordinal);
+            if (isCurrentRun && !string.IsNullOrEmpty(_currentExecutionGuid))
+            {
+                TestRunnerApi.CancelTestRun(_currentExecutionGuid);
+                _currentExecutionGuid = null;
+            }
+
+            if (_currentCallbacks != null && _currentCallbacks.RunId == runId && _api != null)
+            {
+                _api.UnregisterCallbacks(_currentCallbacks);
+                _currentCallbacks = null;
+            }
+
+            cache.AbortRun(runId, reason, durationSeconds);
+        }
+
         private void HandleRunCompleted(string runId)
         {
+            _currentExecutionGuid = null;
+
             if (_currentCallbacks != null)
             {
                 _api.UnregisterCallbacks(_currentCallbacks);
@@ -359,17 +453,34 @@ namespace UniForge.TestRunner
         /// <summary>
         /// Expand test names - if a name is a class prefix, expand to all matching test full names
         /// </summary>
-        private string[] ExpandTestNames(string[] testNames, TestMode mode)
+        private string[] ExpandTestNames(string[] testNames, TestMode mode, out List<string> unmatchedNames, out bool cacheHasTests)
         {
+            unmatchedNames = new List<string>();
+            cacheHasTests = false;
+
             if (!IsCacheReady)
             {
                 Debug.LogWarning("[TestRunner] Cache not ready, cannot expand test names");
                 return null;
             }
 
-            var expanded = new List<string>();
             var allTests = GetTestsCached(mode == TestMode.EditMode ? "EditMode" :
                                           mode == TestMode.PlayMode ? "PlayMode" : "Both");
+
+            cacheHasTests = allTests != null && allTests.Count > 0;
+            return ExpandTestNames(testNames, allTests, out unmatchedNames);
+        }
+
+        /// <summary>
+        /// テスト名を展開する。クラス名 prefix はキャッシュ上の一致する full name 群に展開し、
+        /// 一致しない名前はそのまま通しつつ <paramref name="unmatchedNames"/> に記録する
+        /// （キャッシュにデータがある場合の失敗判定は呼び出し側で行う）。
+        /// </summary>
+        internal static string[] ExpandTestNames(string[] testNames, List<TestInfo> allTests, out List<string> unmatchedNames)
+        {
+            unmatchedNames = new List<string>();
+            var expanded = new List<string>();
+            allTests ??= new List<TestInfo>();
 
             foreach (var name in testNames)
             {
@@ -399,10 +510,11 @@ namespace UniForge.TestRunner
                         }
                     }
 
-                    // If no matches, add as-is (might be a valid full name not in cache)
+                    // If no matches, add as-is and record as unmatched
                     if (!foundAny)
                     {
                         expanded.Add(name);
+                        unmatchedNames.Add(name);
                     }
                 }
             }
@@ -447,8 +559,18 @@ namespace UniForge.TestRunner
 
         public string StartTests(TestExecutionSettings settings)
         {
-            Debug.LogWarning("[TestRunner] Test Framework package is not installed");
+            return StartTests(settings, out _);
+        }
+
+        public string StartTests(TestExecutionSettings settings, out string error)
+        {
+            error = "Test Framework package is not installed";
+            Debug.LogWarning($"[TestRunner] {error}");
             return null;
+        }
+
+        public void CancelRun(string runId, string reason, double durationSeconds = 0)
+        {
         }
 
         public static bool IsTestFrameworkAvailable => false;

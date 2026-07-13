@@ -17,7 +17,7 @@ namespace UniForge.Tools.Mutations
         Kind = ToolKind.Mutation,
         Destructive = false,
         Idempotent = false)]
-    public partial class PackageManagerHandler : MutationHandler
+    public class PackageManagerHandler : MutationHandler
     {
         /// <summary>引数定義</summary>
         public class Args
@@ -53,11 +53,6 @@ namespace UniForge.Tools.Mutations
             public string package_id;
             public string message;
         }
-
-        private ToolDefinition _definition;
-
-        public override ToolDefinition Definition
-            => _definition ??= ToolDefinitionBuilder.FromHandler<PackageManagerHandler>();
 
         protected internal override async Awaitable<ToolResult> ExecuteAsync(string argsJson)
         {

@@ -14,7 +14,7 @@ namespace UniForge.Tools.Mutations
         Kind = ToolKind.Mutation,
         Destructive = false,
         Idempotent = true)]
-    public partial class ModifyGameObjectHandler : MutationHandler
+    public class ModifyGameObjectHandler : MutationHandler
     {
         /// <summary>引数定義</summary>
         public class Args
@@ -44,11 +44,6 @@ namespace UniForge.Tools.Mutations
             public Dictionary<string, object> modified;
             public string error;
         }
-
-        private ToolDefinition _definition;
-
-        public override ToolDefinition Definition
-            => _definition ??= ToolDefinitionBuilder.FromHandler<ModifyGameObjectHandler>();
 
         protected internal override ToolResult Execute(string argsJson)
         {

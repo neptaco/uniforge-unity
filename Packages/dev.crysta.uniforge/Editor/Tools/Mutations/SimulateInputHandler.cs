@@ -19,11 +19,6 @@ namespace UniForge.Tools.Mutations
     [ToolOutput(typeof(Output))]
     public partial class SimulateInputHandler : MutationHandler
     {
-        private ToolDefinition _definition;
-
-        public override ToolDefinition Definition
-            => _definition ??= ToolDefinitionBuilder.FromHandler<SimulateInputHandler>();
-
         protected internal override ToolResult Execute(string argsJson)
         {
             var args = new ToolArgsParser(argsJson);

@@ -15,13 +15,14 @@ namespace UniForge.Tools.Mutations
         Kind = ToolKind.Mutation,
         Destructive = false,
         Idempotent = false)]
-    public partial class RunTestsHandler : DomainReloadResumableMutationHandler<RunTestsHandler.RunTestsWaitState>
+    public class RunTestsHandler : DomainReloadResumableMutationHandler<RunTestsHandler.RunTestsWaitState>
     {
         [Serializable]
         public class RunTestsWaitState
         {
             public string run_id;
             public long run_start_time;
+            public bool has_filter;   // test_names / categories / assemblies のいずれかが明示指定されたか
         }
 
         public class Args
@@ -87,17 +88,6 @@ namespace UniForge.Tools.Mutations
             public string run_id;
         }
 
-        private ToolDefinition _definition;
-
-        public override ToolDefinition Definition
-        {
-            get
-            {
-                _definition ??= ToolDefinitionBuilder.FromHandler<RunTestsHandler>();
-                return _definition;
-            }
-        }
-
         protected internal override ToolResult Execute(string argsJson)
         {
             if (!TestRunnerService.IsTestFrameworkAvailable)
@@ -136,11 +126,13 @@ namespace UniForge.Tools.Mutations
                 Assemblies = ParseCommaSeparated(assemblies)
             };
 
-            var runId = TestRunnerService.instance.StartTests(settings);
+            var runId = TestRunnerService.instance.StartTests(settings, out var startError);
 
             if (string.IsNullOrEmpty(runId))
             {
-                return ToolResult.Fail("Failed to start test run");
+                return ToolResult.Fail(string.IsNullOrEmpty(startError)
+                    ? "Failed to start test run"
+                    : $"Failed to start test run: {startError}");
             }
 
             var run = TestResultCache.instance.GetRun(runId);
@@ -148,7 +140,10 @@ namespace UniForge.Tools.Mutations
                 new RunTestsWaitState
                 {
                     run_id = runId,
-                    run_start_time = run != null ? run.startTime : 0
+                    run_start_time = run != null ? run.startTime : 0,
+                    has_filter = settings.TestNames != null ||
+                                 settings.Categories != null ||
+                                 settings.Assemblies != null
                 },
                 new RunStartedOutput
                 {
@@ -194,6 +189,13 @@ namespace UniForge.Tools.Mutations
 
             if (!run.completed)
             {
+                // timeout した run の状態を残すと以後の run-tests がすべて
+                // 「already in progress」で拒否されるため、ここで中断する
+                TestRunnerService.instance.CancelRun(
+                    run.runId,
+                    $"Timed out after {context.TimeoutMs}ms",
+                    context.ElapsedMs / 1000.0);
+
                 return ToolResult.Complete(new RunTimedOutOutput
                 {
                     message = $"Test run timed out after {context.TimeoutMs}ms",
@@ -210,6 +212,23 @@ namespace UniForge.Tools.Mutations
                     aborted = true,
                     aborted_reason = run.abortedReason,
                     run_id = run.runId
+                }, success: false);
+            }
+
+            // 明示的なフィルタ指定で 0 件実行になった場合は成功として報告しない
+            // (存在しないテスト名の指定が「All tests passed」になるのを防ぐ)
+            if (state.has_filter && run.totalCount == 0)
+            {
+                return ToolResult.Complete(new RunCompletedOutput
+                {
+                    run_id = run.runId,
+                    success = false,
+                    pass_count = run.passCount,
+                    fail_count = run.failCount,
+                    skip_count = run.skipCount,
+                    total_count = run.totalCount,
+                    duration_seconds = run.durationSeconds,
+                    message = "No tests matched the specified filter"
                 }, success: false);
             }
 
