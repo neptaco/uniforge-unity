@@ -3,9 +3,12 @@ using NUnit.Framework;
 using UnityEngine;
 using UnityEditor;
 using UnityEditor.SceneManagement;
+using UnityEngine.EventSystems;
+using UnityEngine.UI;
 using UniForge.TestRunner;
 using UniForge.Tools;
 using UniForge.Tools.Mutations;
+using UniForge.Services;
 
 namespace UniForge.Tests
 {
@@ -93,6 +96,60 @@ namespace UniForge.Tests
             finally
             {
                 Object.DestroyImmediate(parent);
+            }
+        }
+
+        #endregion
+
+        #region AutoPlay Tests
+
+        [Test]
+        public void AutoPlay_TryExecuteUiClick_InvokesButtonWithoutNativeInput()
+        {
+            var eventSystemObject = new GameObject("MCP_Test_EventSystem", typeof(EventSystem));
+            var eventSystem = eventSystemObject.GetComponent<EventSystem>();
+            var buttonObject = new GameObject("MCP_Test_Button", typeof(RectTransform), typeof(Button));
+            var clickCount = 0;
+            buttonObject.GetComponent<Button>().onClick.AddListener(() => clickCount++);
+
+            try
+            {
+                var success = AutoPlayService.TryExecuteUiClick(
+                    buttonObject,
+                    new Vector2(100, 50),
+                    eventSystem,
+                    out var error);
+
+                Assert.IsTrue(success, error);
+                Assert.IsNull(error);
+                Assert.AreEqual(1, clickCount);
+            }
+            finally
+            {
+                Object.DestroyImmediate(buttonObject);
+                Object.DestroyImmediate(eventSystemObject);
+            }
+        }
+
+        [Test]
+        public void AutoPlay_TryExecuteUiClick_WithoutEventSystem_Fails()
+        {
+            var buttonObject = new GameObject("MCP_Test_Button", typeof(RectTransform), typeof(Button));
+
+            try
+            {
+                var success = AutoPlayService.TryExecuteUiClick(
+                    buttonObject,
+                    Vector2.zero,
+                    null,
+                    out var error);
+
+                Assert.IsFalse(success);
+                Assert.That(error, Does.Contain("no active EventSystem"));
+            }
+            finally
+            {
+                Object.DestroyImmediate(buttonObject);
             }
         }
 

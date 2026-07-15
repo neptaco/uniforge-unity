@@ -1024,7 +1024,7 @@ namespace UniForge.Services
 
         /// <summary>
         /// パス/名前指定で UI 要素をタップする。
-        /// RectTransform の中心をスクリーン座標に変換し、既存の入力シミュレーションに委譲する。
+        /// EventSystem に直接イベントを配送し、Unity Editor のアクティブ化や物理カーソル移動を避ける。
         /// </summary>
         private StepResult ExecuteTapUi(JsonObject args)
         {
@@ -1048,16 +1048,9 @@ namespace UniForge.Services
             if (screenPos == null)
                 return StepResult.Fail($"Cannot resolve screen position for '{GameObjectResolver.GetHierarchyPath(go)}'");
 
-#if ENABLE_INPUT_SYSTEM
-            var simulator = GetInputSystemSimulator();
-            if (simulator == null)
-                return StepResult.Fail("Mouse simulation requires the Input System package.");
-
-            simulator.FocusApplication();
             var pos = screenPos.Value;
-            var simResult = simulator.MouseClick(0, pos.x, pos.y);
-            if (!simResult.Success)
-                return StepResult.Fail(simResult.Error);
+            if (!TryExecuteUiClick(go, pos, out var clickError))
+                return StepResult.Fail(clickError);
 
             var goPath = GameObjectResolver.GetHierarchyPath(go);
             return new StepResult
@@ -1066,15 +1059,54 @@ namespace UniForge.Services
                 Action = "tap_ui",
                 Details = $"path='{goPath}' screen=({pos.x:F1},{pos.y:F1})",
                 Message = $"Tapped UI element: {goPath}",
-                SimulatorType = simulator.Name,
+                SimulatorType = "EventSystem",
                 hit_ui = BuildUiHitFromGameObject(go),
                 ui_hits = new List<UiHitCompact> { BuildUiHitFromGameObject(go) }
             };
-#else
-            return StepResult.Fail(
-                "tap_ui requires the Unity Input System package (com.unity.inputsystem). " +
-                "Install it using the package-manager tool: action='add', package_id='com.unity.inputsystem'");
-#endif
+        }
+
+        internal static bool TryExecuteUiClick(GameObject target, Vector2 screenPosition, out string error)
+        {
+            return TryExecuteUiClick(target, screenPosition, EventSystem.current, out error);
+        }
+
+        internal static bool TryExecuteUiClick(
+            GameObject target,
+            Vector2 screenPosition,
+            EventSystem eventSystem,
+            out string error)
+        {
+            if (eventSystem == null)
+            {
+                error = "Cannot tap UI element because no active EventSystem exists in the scene";
+                return false;
+            }
+
+            var eventTarget = ExecuteEvents.GetEventHandler<IPointerClickHandler>(target);
+            if (eventTarget == null)
+            {
+                error = $"UI element '{GameObjectResolver.GetHierarchyPath(target)}' has no pointer click handler";
+                return false;
+            }
+
+            var eventData = new PointerEventData(eventSystem)
+            {
+                button = PointerEventData.InputButton.Left,
+                position = screenPosition,
+                pointerId = -1,
+                pointerPress = eventTarget,
+                rawPointerPress = target,
+                eligibleForClick = true,
+                clickCount = 1,
+                clickTime = Time.unscaledTime
+            };
+
+            ExecuteEvents.Execute(eventTarget, eventData, ExecuteEvents.pointerDownHandler);
+            ExecuteEvents.Execute(eventTarget, eventData, ExecuteEvents.pointerUpHandler);
+            ExecuteEvents.Execute(eventTarget, eventData, ExecuteEvents.pointerClickHandler);
+
+            error = null;
+            return true;
         }
 
         /// <summary>

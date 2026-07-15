@@ -13,7 +13,7 @@ namespace UniForge.Tools.Mutations
     /// wait_for_log, wait_for_object, capture 等の E2E テスト用アクションを持つ。
     /// </summary>
     [Tool("auto-play",
-        Description = "Execute a sequence of play mode steps: input simulation (including UI path-based tap_ui and input_text), log/object/UI-state waits, assertions, and captures. Steps can be inline or loaded from a scenario file.",
+        Description = "Execute a sequence of play mode steps: input simulation (including background-safe UI path-based tap_ui and input_text), log/object/UI-state waits, assertions, and captures. Prefer tap_ui for UI controls because it does not activate the Unity Editor or move the physical cursor. Steps can be inline or loaded from a scenario file.",
         Title = "Auto Play",
         Category = ToolCategory.Input,
         Kind = ToolKind.Mutation,
@@ -26,7 +26,7 @@ namespace UniForge.Tools.Mutations
         {
             public class Step
             {
-                [ToolParameter("Action type: key_down, key_up, key_press, mouse_click, tap_ui, input_text, wait, wait_for_log, wait_for_object, wait_for_ui_state, capture, etc.", Required = true)]
+                [ToolParameter("Action type: key_down, key_up, key_press, mouse_click, tap_ui, input_text, wait, wait_for_log, wait_for_object, wait_for_ui_state, capture, etc. Prefer tap_ui for UI controls; it does not activate Unity or move the physical cursor.", Required = true)]
                 public string action;
 
                 [ToolParameter("Unique ID for this step. Can be referenced by 'since' in later wait_for_log steps.")]

@@ -42,7 +42,7 @@ namespace UniForge.Tools.Mutations
             [ToolParameter("Position [x,y] for tap/long_press actions (world or screen coordinates)", Required = false)]
             public float[] position;
 
-            [ToolParameter("Hierarchy path of UI element for tap_ui/input_text (e.g., 'Canvas/Panel/Button')", Required = false)]
+            [ToolParameter("Hierarchy path of UI element for tap_ui/input_text (e.g., 'Canvas/Panel/Button'). tap_ui is background-safe and does not activate Unity or move the physical cursor.", Required = false)]
             public string path;
 
             [ToolParameter("Name of UI element for tap_ui/input_text", Required = false)]
