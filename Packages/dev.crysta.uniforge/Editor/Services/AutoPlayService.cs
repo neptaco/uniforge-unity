@@ -283,9 +283,9 @@ namespace UniForge.Services
             try { _ = new Regex(pattern); }
             catch (ArgumentException ex) { return StepResult.Fail($"Invalid regex pattern: {ex.Message}"); }
 
-            var timeoutMs = args.GetInt("timeout_ms", DefaultWaitForTimeoutMs);
+            var timeoutMs = Math.Max(0, args.GetInt("timeout_ms", DefaultWaitForTimeoutMs));
             var filter = args.GetString("filter", "all");
-            var pollMs = args.GetInt("poll_interval_ms", DefaultWaitForPollMs);
+            var pollMs = Math.Max(1, args.GetInt("poll_interval_ms", DefaultWaitForPollMs));
             var sinceTs = baseSinceTs > 0 ? baseSinceTs : DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
 
             var startTime = DateTimeOffset.UtcNow;
@@ -316,7 +316,7 @@ namespace UniForge.Services
                     };
                 }
 
-                await Awaitable.WaitForSecondsAsync(pollMs / 1000f);
+                await WaitForEditorTimeAsync(pollMs);
             }
 
             return StepResult.Fail(
@@ -335,10 +335,13 @@ namespace UniForge.Services
             if (string.IsNullOrEmpty(objectName) && string.IsNullOrEmpty(objectPath))
                 return StepResult.Fail("wait_for_object requires 'name' or 'path' parameter");
 
-            var state = args.GetString("state", "exists");
+            var state = args.GetString("state", "exists").ToLowerInvariant();
+            if (state != "exists" && state != "destroyed")
+                return StepResult.Fail("wait_for_object state must be 'exists' or 'destroyed'");
+
             var expectExists = !state.Equals("destroyed", StringComparison.OrdinalIgnoreCase);
-            var timeoutMs = args.GetInt("timeout_ms", DefaultWaitForTimeoutMs);
-            var pollMs = args.GetInt("poll_interval_ms", DefaultWaitForPollMs);
+            var timeoutMs = Math.Max(0, args.GetInt("timeout_ms", DefaultWaitForTimeoutMs));
+            var pollMs = Math.Max(1, args.GetInt("poll_interval_ms", DefaultWaitForPollMs));
 
             var identifier = !string.IsNullOrEmpty(objectPath) ? objectPath : objectName;
             var startTime = DateTimeOffset.UtcNow;
@@ -363,7 +366,7 @@ namespace UniForge.Services
                     };
                 }
 
-                await Awaitable.WaitForSecondsAsync(pollMs / 1000f);
+                await WaitForEditorTimeAsync(pollMs);
             }
 
             return StepResult.Fail(
@@ -372,17 +375,26 @@ namespace UniForge.Services
 
         private static GameObject FindGameObject(string name, string path)
         {
-            if (!string.IsNullOrEmpty(path))
-            {
-                return GameObject.Find(path);
-            }
-
-            // 名前検索（非アクティブも含む）
             var all = Resources.FindObjectsOfTypeAll<GameObject>();
             foreach (var go in all)
             {
-                if (go.scene.isLoaded && go.name == name)
+                if (!IsLoadedSceneObject(go))
+                    continue;
+
+                if (!string.IsNullOrEmpty(path) &&
+                    string.Equals(
+                        GameObjectResolver.GetHierarchyPath(go),
+                        path.Trim('/'),
+                        StringComparison.Ordinal))
+                {
                     return go;
+                }
+
+                if (string.IsNullOrEmpty(path) &&
+                    string.Equals(go.name, name, StringComparison.Ordinal))
+                {
+                    return go;
+                }
             }
 
             return null;
@@ -396,6 +408,7 @@ namespace UniForge.Services
         {
             var filename = args.GetString("filename");
             var gameOnly = args.GetBool("game_only", false);
+            var focusWindow = args.GetBool("focus_window", false);
 
             string outputPath;
             if (!string.IsNullOrEmpty(filename))
@@ -438,7 +451,8 @@ namespace UniForge.Services
                 if (gameView == null)
                     return StepResult.Fail("Game View not found");
 
-                gameView.Focus();
+                if (focusWindow)
+                    gameView.Focus();
                 gameView.Repaint();
 
                 if (!TryCaptureWindowInternal(gameView, outputPath, out var width, out var height))
@@ -580,7 +594,7 @@ namespace UniForge.Services
         {
             var sinceTs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
 
-            await Awaitable.WaitForSecondsAsync(waitMs / 1000f);
+            await WaitForEditorTimeAsync(waitMs);
 
             var rawLogs = ConsoleLogCapture.instance.GetLogsFiltered(new LogFilterOptions
             {
@@ -683,7 +697,8 @@ namespace UniForge.Services
             var key = args.GetString("key");
             var durationMs = args.GetNullableInt("duration_ms") ?? 100;
 
-            simulator.FocusApplication();
+            if (ShouldFocusApplicationForKeyboard(simulator))
+                simulator.FocusApplication();
 
             return action switch
             {
@@ -692,6 +707,17 @@ namespace UniForge.Services
                 "key_press" => simulator.KeyPress(key, durationMs),
                 _ => InputSimulationResult.Fail($"Invalid keyboard action: {action}. Valid actions: key_down, key_up, key_press")
             };
+        }
+
+        internal static bool ShouldFocusApplicationForKeyboard(IInputSimulator simulator)
+        {
+#if ENABLE_INPUT_SYSTEM
+            // Input System の QueueEvent は Editor がバックグラウンドでも処理される。
+            // OS ネイティブ入力へフォールバックした場合だけ前面化が必要。
+            return simulator is not InputSystemSimulator;
+#else
+            return true;
+#endif
         }
 
         private IInputSimulator GetKeyboardSimulator()
@@ -1124,22 +1150,23 @@ namespace UniForge.Services
                 return StepResult.Fail("Parameter 'text' is required for input_text action");
 
             var append = args.GetBool("append", false);
+            var submit = args.GetBool("submit", false);
             var goPath = GameObjectResolver.GetHierarchyPath(go);
 
             // TMP_InputField を優先して検索
             var tmpInputField = FindTMPInputField(go);
             if (tmpInputField != null)
             {
-                if (append)
-                    SetTMPInputFieldText(tmpInputField, GetTMPInputFieldText(tmpInputField) + text);
-                else
-                    SetTMPInputFieldText(tmpInputField, text);
+                var newText = append ? GetTMPInputFieldText(tmpInputField) + text : text;
+                SetTMPInputFieldText(tmpInputField, newText);
+                if (submit)
+                    InvokeTMPInputFieldEvent(tmpInputField, "onEndEdit", newText);
 
                 return new StepResult
                 {
                     Success = true,
                     Action = "input_text",
-                    Details = $"path='{goPath}' text='{TruncateForDisplay(text, 50)}' type=TMP_InputField",
+                    Details = $"path='{goPath}' text='{TruncateForDisplay(text, 50)}' type=TMP_InputField submit={submit}",
                     Message = $"Set text on {goPath}",
                     hit_ui = BuildUiHitFromGameObject(go)
                 };
@@ -1149,19 +1176,15 @@ namespace UniForge.Services
             var inputField = go.GetComponent<InputField>();
             if (inputField != null)
             {
-                if (append)
-                    inputField.text += text;
-                else
-                    inputField.text = text;
-
-                // onValueChanged / onEndEdit を発火
-                inputField.onValueChanged.Invoke(inputField.text);
+                inputField.text = append ? inputField.text + text : text;
+                if (submit)
+                    inputField.onEndEdit.Invoke(inputField.text);
 
                 return new StepResult
                 {
                     Success = true,
                     Action = "input_text",
-                    Details = $"path='{goPath}' text='{TruncateForDisplay(text, 50)}' type=InputField",
+                    Details = $"path='{goPath}' text='{TruncateForDisplay(text, 50)}' type=InputField submit={submit}",
                     Message = $"Set text on {goPath}",
                     hit_ui = BuildUiHitFromGameObject(go)
                 };
@@ -1177,25 +1200,44 @@ namespace UniForge.Services
 
         private async Awaitable<StepResult> ExecuteWaitForUiState(JsonObject args)
         {
-            var resolveResult = ResolveUiGameObject(args);
-            if (!resolveResult.Success)
-                return StepResult.Fail(resolveResult.Error);
-
-            var go = resolveResult.GameObject;
             var condition = args.GetString("condition");
             if (string.IsNullOrEmpty(condition))
                 return StepResult.Fail("wait_for_ui_state requires 'condition' parameter");
+            if (!IsSupportedUiCondition(condition))
+                return StepResult.Fail($"Unknown wait_for_ui_state condition: '{condition}'");
 
-            var timeoutMs = args.GetInt("timeout_ms", DefaultWaitForTimeoutMs);
-            var pollMs = args.GetInt("poll_interval_ms", DefaultWaitForPollMs);
-            var goPath = GameObjectResolver.GetHierarchyPath(go);
+            var path = args.GetString("path");
+            var name = args.GetString("name");
+            var instanceId = args.HasKey("instance_id") ? (int?)args.GetInt("instance_id") : null;
+            if (string.IsNullOrEmpty(path) && string.IsNullOrEmpty(name) && !instanceId.HasValue)
+                return StepResult.Fail("Parameter 'path', 'name', or 'instance_id' is required");
+
+            var timeoutMs = Math.Max(0, args.GetInt("timeout_ms", DefaultWaitForTimeoutMs));
+            var pollMs = Math.Max(1, args.GetInt("poll_interval_ms", DefaultWaitForPollMs));
+            var identifier = !string.IsNullOrEmpty(path)
+                ? path
+                : !string.IsNullOrEmpty(name)
+                    ? name
+                    : instanceId.Value.ToString();
 
             var startTime = DateTimeOffset.UtcNow;
             var timeout = TimeSpan.FromMilliseconds(timeoutMs);
+            var currentDetail = "UI element not found";
 
             while (DateTimeOffset.UtcNow - startTime < timeout)
             {
+                var resolveResult = ResolveUiGameObject(args);
+                if (!resolveResult.Success)
+                {
+                    currentDetail = resolveResult.Error;
+                    await WaitForEditorTimeAsync(pollMs);
+                    continue;
+                }
+
+                var go = resolveResult.GameObject;
+                var goPath = GameObjectResolver.GetHierarchyPath(go);
                 var (met, detail) = EvaluateUiCondition(go, condition, args);
+                currentDetail = detail;
                 if (met)
                 {
                     var elapsed = (int)(DateTimeOffset.UtcNow - startTime).TotalMilliseconds;
@@ -1209,17 +1251,49 @@ namespace UniForge.Services
                     };
                 }
 
-                await Awaitable.WaitForSecondsAsync(pollMs / 1000f);
-
-                // GameObject が破棄された場合のハンドリング
-                if (go == null)
-                    return StepResult.Fail($"GameObject '{goPath}' was destroyed while waiting");
+                await WaitForEditorTimeAsync(pollMs);
             }
 
-            var (_, currentDetail) = EvaluateUiCondition(go, condition, args);
             return StepResult.Fail(
                 $"wait_for_ui_state timed out after {timeoutMs}ms. " +
-                $"Path: '{goPath}', condition: '{condition}', current: {currentDetail}");
+                $"Target: '{identifier}', condition: '{condition}', current: {currentDetail}");
+        }
+
+        private static bool IsSupportedUiCondition(string condition)
+        {
+            return condition is "interactable" or "active" or "text_equals" or
+                "text_contains" or "toggle_on" or "slider_value";
+        }
+
+        /// <summary>
+        /// Editor の実時間で待機する。ゲームの timeScale や一時停止状態には依存しない。
+        /// </summary>
+        internal static async Awaitable WaitForEditorTimeAsync(int milliseconds)
+        {
+            if (milliseconds <= 0)
+                return;
+
+            var deadline = EditorApplication.timeSinceStartup + milliseconds / 1000.0;
+            var completionSource = new AwaitableCompletionSource<bool>();
+            EditorApplication.CallbackFunction updateCallback = null;
+            updateCallback = () =>
+            {
+                if (EditorApplication.timeSinceStartup < deadline)
+                    return;
+
+                EditorApplication.update -= updateCallback;
+                completionSource.SetResult(true);
+            };
+
+            EditorApplication.update += updateCallback;
+            try
+            {
+                await completionSource.Awaitable;
+            }
+            finally
+            {
+                EditorApplication.update -= updateCallback;
+            }
         }
 
         /// <summary>
@@ -1307,20 +1381,86 @@ namespace UniForge.Services
         /// <summary>
         /// args から path / name / instance_id で GameObject を解決する。
         /// </summary>
-        private static GameObjectResolver.Result ResolveUiGameObject(JsonObject args)
+        internal static GameObjectResolver.Result ResolveUiGameObject(JsonObject args)
         {
             var path = args.GetString("path");
             var name = args.GetString("name");
             int? instanceId = args.HasKey("instance_id") ? (int?)args.GetInt("instance_id") : null;
 
-            // path が無ければ name を path として扱う
-            if (string.IsNullOrEmpty(path) && !string.IsNullOrEmpty(name))
-                path = name;
-
             if (string.IsNullOrEmpty(path) && !instanceId.HasValue)
-                return GameObjectResolver.Result.Fail("Parameter 'path', 'name', or 'instance_id' is required");
+            {
+                if (string.IsNullOrEmpty(name))
+                    return GameObjectResolver.Result.Fail("Parameter 'path', 'name', or 'instance_id' is required");
 
-            return GameObjectResolver.Resolve(path, instanceId);
+                return FindLoadedSceneObjectByName(name);
+            }
+
+            var result = GameObjectResolver.Resolve(path, instanceId);
+            if (result.Success || instanceId.HasValue)
+                return result;
+
+            // DontDestroyOnLoad シーンは SceneManager.sceneCount に含まれず、
+            // アクティブシーン限定の GameObjectResolver からは検索できない。
+            // Resources 経由でロード済みシーンのオブジェクトを走査する。
+            var normalizedPath = path.Trim('/');
+            var allObjects = Resources.FindObjectsOfTypeAll<GameObject>();
+            foreach (var gameObject in allObjects)
+            {
+                if (!IsLoadedSceneObject(gameObject))
+                    continue;
+
+                if (string.Equals(
+                        GameObjectResolver.GetHierarchyPath(gameObject),
+                        normalizedPath,
+                        StringComparison.Ordinal))
+                {
+                    return GameObjectResolver.Result.Ok(gameObject);
+                }
+            }
+
+            return result;
+        }
+
+        private static GameObjectResolver.Result FindLoadedSceneObjectByName(string name)
+        {
+            var activeMatches = new List<GameObject>();
+            var inactiveMatches = new List<GameObject>();
+            var allObjects = Resources.FindObjectsOfTypeAll<GameObject>();
+            foreach (var gameObject in allObjects)
+            {
+                if (!IsLoadedSceneObject(gameObject) ||
+                    !string.Equals(gameObject.name, name, StringComparison.Ordinal))
+                {
+                    continue;
+                }
+
+                if (gameObject.activeInHierarchy)
+                    activeMatches.Add(gameObject);
+                else
+                    inactiveMatches.Add(gameObject);
+            }
+
+            var matches = activeMatches.Count > 0 ? activeMatches : inactiveMatches;
+            if (matches.Count == 1)
+                return GameObjectResolver.Result.Ok(matches[0]);
+            if (matches.Count == 0)
+                return GameObjectResolver.Result.Fail($"GameObject not found with name: {name}");
+
+            var paths = new List<string>();
+            for (var i = 0; i < Math.Min(matches.Count, 3); i++)
+                paths.Add(GameObjectResolver.GetHierarchyPath(matches[i]));
+
+            return GameObjectResolver.Result.Fail(
+                $"Multiple GameObjects found with name '{name}': {string.Join(", ", paths)}. " +
+                "Use 'path' or 'instance_id' to avoid an ambiguous UI operation.");
+        }
+
+        private static bool IsLoadedSceneObject(GameObject gameObject)
+        {
+            return gameObject != null &&
+                   gameObject.scene.IsValid() &&
+                   gameObject.scene.isLoaded &&
+                   !EditorUtility.IsPersistent(gameObject);
         }
 
         /// <summary>
@@ -1474,12 +1614,14 @@ namespace UniForge.Services
         {
             var prop = tmpInputField.GetType().GetProperty("text");
             prop?.SetValue(tmpInputField, text);
+        }
 
-            // onValueChanged を発火
-            var onValueChanged = tmpInputField.GetType().GetField("onValueChanged");
-            if (onValueChanged != null)
+        private static void InvokeTMPInputFieldEvent(Component tmpInputField, string eventName, string text)
+        {
+            var eventField = tmpInputField.GetType().GetField(eventName);
+            if (eventField != null)
             {
-                var eventObj = onValueChanged.GetValue(tmpInputField);
+                var eventObj = eventField.GetValue(tmpInputField);
                 var invokeMethod = eventObj?.GetType().GetMethod("Invoke", new[] { typeof(string) });
                 invokeMethod?.Invoke(eventObj, new object[] { text });
             }
@@ -1505,13 +1647,13 @@ namespace UniForge.Services
         {
             if (action == "wait")
             {
-                return args.GetNullableInt("ms")
+                return Math.Max(0, args.GetNullableInt("ms")
                     ?? args.GetNullableInt("duration_ms")
                     ?? args.GetNullableInt("wait_ms")
-                    ?? 1000;
+                    ?? 1000);
             }
 
-            return args.GetNullableInt("wait_ms") ?? 0;
+            return Math.Max(0, args.GetNullableInt("wait_ms") ?? 0);
         }
 
         private static List<LogEntryCompact> ToCompactLogs(List<LogEntry> logs)

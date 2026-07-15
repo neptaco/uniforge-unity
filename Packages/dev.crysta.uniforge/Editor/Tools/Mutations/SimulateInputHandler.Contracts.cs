@@ -57,6 +57,9 @@ namespace UniForge.Tools.Mutations
             [ToolParameter("If true, append text instead of replacing for input_text (default: false)", Required = false)]
             public bool? append;
 
+            [ToolParameter("If true, invoke the input field's submit/end-edit event after input_text (default: false)", Required = false)]
+            public bool? submit;
+
             [ToolParameter("Wait time in milliseconds for wait action", Required = false)]
             public int? ms;
 

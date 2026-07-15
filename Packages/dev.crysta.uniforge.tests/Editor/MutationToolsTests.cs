@@ -1,13 +1,16 @@
+using System.Collections;
 using System.Collections.Generic;
 using NUnit.Framework;
 using UnityEngine;
 using UnityEditor;
 using UnityEditor.SceneManagement;
 using UnityEngine.EventSystems;
+using UnityEngine.TestTools;
 using UnityEngine.UI;
 using UniForge.TestRunner;
 using UniForge.Tools;
 using UniForge.Tools.Mutations;
+using UniForge.Tools.Mutations.InputSimulation;
 using UniForge.Services;
 
 namespace UniForge.Tests
@@ -151,6 +154,36 @@ namespace UniForge.Tests
             {
                 Object.DestroyImmediate(buttonObject);
             }
+        }
+
+        [Test]
+        public void AutoPlay_InputSystemKeyboard_DoesNotRequireEditorFocus()
+        {
+            var simulator = new InputSystemSimulator();
+
+            Assert.IsFalse(AutoPlayService.ShouldFocusApplicationForKeyboard(simulator));
+        }
+
+        [UnityTest]
+        public IEnumerator InputSimulatorUtils_ScheduleAfterMilliseconds_HonorsDuration()
+        {
+            const int durationMs = 80;
+            var startedAt = EditorApplication.timeSinceStartup;
+            var invokedAt = 0.0;
+
+            InputSimulatorUtils.ScheduleAfterMilliseconds(
+                durationMs,
+                () => invokedAt = EditorApplication.timeSinceStartup);
+
+            var timeoutAt = startedAt + 2.0;
+            while (invokedAt <= 0.0 && EditorApplication.timeSinceStartup < timeoutAt)
+                yield return null;
+
+            Assert.Greater(invokedAt, 0.0, "Scheduled callback did not run");
+            Assert.GreaterOrEqual(
+                invokedAt - startedAt,
+                durationMs / 1000.0 * 0.8,
+                "Scheduled callback ran before duration_ms elapsed");
         }
 
         #endregion

@@ -279,10 +279,10 @@ namespace UniForge.Tools.Mutations.InputSimulation
             PostKeyEvent(keyCode, true);
 
             // Schedule key up
-            EditorApplication.delayCall += () =>
+            InputSimulatorUtils.ScheduleAfterMilliseconds(durationMs, () =>
             {
                 PostKeyEvent(keyCode, false);
-            };
+            });
 
             return InputSimulationResult.Ok(
                 "key_press",

@@ -107,14 +107,20 @@ namespace UniForge.Tools.Mutations
                 [ToolParameter("If true, append text instead of replacing for input_text action")]
                 public bool? append;
 
+                [ToolParameter("If true, invoke the input field's submit/end-edit event after input_text")]
+                public bool? submit;
+
                 [ToolParameter("Instance ID of the target GameObject (alternative to path/name for tap_ui, input_text, wait_for_ui_state)")]
                 public int? instance_id;
 
                 [ToolParameter("Filename for capture action (without extension)")]
                 public string filename;
 
-                [ToolParameter("For capture: capture only 3D render without UI (default: true)")]
+                [ToolParameter("For capture: capture only 3D render without UI (default: false)")]
                 public bool? game_only;
+
+                [ToolParameter("For capture: if true, focus the Game window before capture. Default: false")]
+                public bool? focus_window;
             }
 
             [ToolParameter("Array of steps to execute sequentially (mutually exclusive with scenario_file)")]

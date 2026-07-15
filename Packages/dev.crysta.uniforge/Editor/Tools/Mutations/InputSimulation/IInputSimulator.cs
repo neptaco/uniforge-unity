@@ -1,3 +1,4 @@
+using System;
 using UnityEditor;
 
 namespace UniForge.Tools.Mutations.InputSimulation
@@ -30,6 +31,29 @@ namespace UniForge.Tools.Mutations.InputSimulation
             {
                 gameView.Focus();
             }
+        }
+
+        /// <summary>
+        /// ゲーム時間に依存せず、指定時間後に Editor update 上で処理を実行する。
+        /// timeScale=0 や Editor がバックグラウンドの状態でも duration_ms を尊重する。
+        /// </summary>
+        internal static void ScheduleAfterMilliseconds(int durationMs, Action callback)
+        {
+            if (callback == null)
+                return;
+
+            var deadline = EditorApplication.timeSinceStartup + Math.Max(0, durationMs) / 1000.0;
+            EditorApplication.CallbackFunction updateCallback = null;
+            updateCallback = () =>
+            {
+                if (EditorApplication.timeSinceStartup < deadline)
+                    return;
+
+                EditorApplication.update -= updateCallback;
+                callback();
+            };
+
+            EditorApplication.update += updateCallback;
         }
     }
 

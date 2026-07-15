@@ -244,10 +244,10 @@ namespace UniForge.Tools.Mutations.InputSimulation
             SendKeyInput(vk, false);
 
             // Schedule key up
-            EditorApplication.delayCall += () =>
+            InputSimulatorUtils.ScheduleAfterMilliseconds(durationMs, () =>
             {
                 SendKeyInput(vk, true);
-            };
+            });
 
             return InputSimulationResult.Ok(
                 "key_press",

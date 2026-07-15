@@ -90,7 +90,7 @@ namespace UniForge.Tools.Mutations.InputSimulation
                 InputSystem.QueueEvent(eventPtr);
             }
 
-            EditorApplication.delayCall += () =>
+            InputSimulatorUtils.ScheduleAfterMilliseconds(durationMs, () =>
             {
                 if (keyboard != null && Keyboard.current == keyboard)
                 {
@@ -100,7 +100,7 @@ namespace UniForge.Tools.Mutations.InputSimulation
                         InputSystem.QueueEvent(eventPtr);
                     }
                 }
-            };
+            });
 
             return InputSimulationResult.Ok("key_press", $"Key '{key}' pressed for ~{durationMs}ms", $"Simulated key press: {key}", Name);
         }

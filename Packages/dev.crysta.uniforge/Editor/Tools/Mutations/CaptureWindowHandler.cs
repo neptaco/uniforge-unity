@@ -34,6 +34,9 @@ namespace UniForge.Tools.Mutations
 
             [ToolParameter("If true, include the captured PNG as base64 in the response. Default: false")]
             public bool? return_image;
+
+            [ToolParameter("If true, focus the target Editor window before capture. Default: false")]
+            public bool? focus_window;
         }
 
         /// <summary>結果</summary>
@@ -82,6 +85,7 @@ namespace UniForge.Tools.Mutations
             var outputPath = args.GetString("path");
             var gameOnly = args.GetBool("game_only", false);
             var returnImage = args.GetBool("return_image", false);
+            var focusWindow = args.GetBool("focus_window", false);
 
             if (string.IsNullOrEmpty(windowName))
             {
@@ -121,8 +125,9 @@ namespace UniForge.Tools.Mutations
                 return ToolResult.Fail($"Could not get window of type: {typeName}");
             }
 
-            // ウィンドウを前面に出して再描画
-            window.Focus();
+            // GrabPixels はフォーカス不要。必要な場合だけ明示的に前面化する。
+            if (focusWindow)
+                window.Focus();
             window.Repaint();
 
             // デフォルトパス
