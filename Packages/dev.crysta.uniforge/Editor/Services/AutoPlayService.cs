@@ -293,9 +293,7 @@ namespace UniForge.Services
 #if ENABLE_INPUT_SYSTEM
                 var simulator = GetInputSystemSimulator();
                 if (simulator == null)
-                    return StepResult.Fail("Mouse simulation requires the Input System package, but no mouse device is available.");
-
-                simulator.FocusApplication();
+                    return StepResult.Fail("Mouse simulation requires the Unity Input System package (com.unity.inputsystem).");
 
                 var coordinate = args.GetString("coordinate") ?? "screen";
                 bool isWorld = coordinate.Equals("world", StringComparison.OrdinalIgnoreCase);
@@ -389,9 +387,9 @@ namespace UniForge.Services
             try { _ = new Regex(pattern); }
             catch (ArgumentException ex) { return StepResult.Fail($"Invalid regex pattern: {ex.Message}"); }
 
-            var timeoutMs = args.GetInt("timeout_ms", DefaultWaitForTimeoutMs);
+            var timeoutMs = Math.Max(0, args.GetInt("timeout_ms", DefaultWaitForTimeoutMs));
             var filter = args.GetString("filter", "all");
-            var pollMs = args.GetInt("poll_interval_ms", DefaultWaitForPollMs);
+            var pollMs = Math.Max(1, args.GetInt("poll_interval_ms", DefaultWaitForPollMs));
             var sinceTs = baseSinceTs > 0 ? baseSinceTs : DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
 
             var startTime = DateTimeOffset.UtcNow;
@@ -441,10 +439,13 @@ namespace UniForge.Services
             if (string.IsNullOrEmpty(objectName) && string.IsNullOrEmpty(objectPath))
                 return StepResult.Fail("wait_for_object requires 'name' or 'path' parameter");
 
-            var state = args.GetString("state", "exists");
+            var state = args.GetString("state", "exists").ToLowerInvariant();
+            if (state != "exists" && state != "destroyed")
+                return StepResult.Fail("wait_for_object state must be 'exists' or 'destroyed'");
+
             var expectExists = !state.Equals("destroyed", StringComparison.OrdinalIgnoreCase);
-            var timeoutMs = args.GetInt("timeout_ms", DefaultWaitForTimeoutMs);
-            var pollMs = args.GetInt("poll_interval_ms", DefaultWaitForPollMs);
+            var timeoutMs = Math.Max(0, args.GetInt("timeout_ms", DefaultWaitForTimeoutMs));
+            var pollMs = Math.Max(1, args.GetInt("poll_interval_ms", DefaultWaitForPollMs));
 
             var identifier = !string.IsNullOrEmpty(objectPath) ? objectPath : objectName;
             var startTime = DateTimeOffset.UtcNow;
@@ -620,7 +621,6 @@ namespace UniForge.Services
                 if (gameView == null)
                     return StepResult.Fail("Game View not found");
 
-                gameView.Focus();
                 gameView.Repaint();
 
                 if (!TryCaptureWindowInternal(gameView, outputPath, out var width, out var height))
@@ -762,7 +762,7 @@ namespace UniForge.Services
         {
             var sinceTs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
 
-            await Awaitable.WaitForSecondsAsync(waitMs / 1000f);
+            await WaitForEditorTimeAsync(waitMs);
 
             var rawLogs = ConsoleLogCapture.instance.GetLogsFiltered(new LogFilterOptions
             {
@@ -863,14 +863,14 @@ namespace UniForge.Services
         {
             var simulator = GetKeyboardSimulator();
             if (simulator == null)
-                return InputSimulationResult.Fail("No input simulator available for keyboard simulation.");
+                return InputSimulationResult.Fail(
+                    "Keyboard simulation requires the Unity Input System package (com.unity.inputsystem). " +
+                    "Legacy Input Manager injection is unsupported because it requires foreground OS input.");
             if (!simulator.IsAvailable)
                 return InputSimulationResult.Fail($"Input simulator '{simulator.Name}' is not available.");
 
             var key = args.GetString("key");
             var durationMs = args.GetNullableInt("duration_ms") ?? 100;
-
-            simulator.FocusApplication();
 
             return action switch
             {
@@ -897,14 +897,7 @@ namespace UniForge.Services
             if (inputSystemSimulator.IsAvailable)
                 return inputSystemSimulator;
 #endif
-
-#if UNITY_EDITOR_OSX
-            return new MacOSInputSimulator();
-#elif UNITY_EDITOR_WIN
-            return new WindowsInputSimulator();
-#else
             return null;
-#endif
         }
 
         // ---------------------------------------------------------------
@@ -916,9 +909,7 @@ namespace UniForge.Services
 #if ENABLE_INPUT_SYSTEM
             var simulator = GetInputSystemSimulator();
             if (simulator == null)
-                return InputSimulationResult.Fail("Mouse simulation requires the Input System package, but no mouse device is available.");
-
-            simulator.FocusApplication();
+                return InputSimulationResult.Fail("Mouse simulation requires the Unity Input System package (com.unity.inputsystem).");
 
             var coordinate = args.GetString("coordinate") ?? "screen";
             bool isWorld = coordinate.Equals("world", StringComparison.OrdinalIgnoreCase);
@@ -1191,7 +1182,7 @@ namespace UniForge.Services
 
         /// <summary>
         /// パス/名前指定で UI 要素をタップする。
-        /// RectTransform の中心をスクリーン座標に変換し、既存の入力シミュレーションに委譲する。
+        /// EventSystem に直接イベントを配送し、Unity Editor のアクティブ化や物理カーソル移動を避ける。
         /// </summary>
         private StepResult ExecuteTapUi(JsonObject args)
         {
@@ -1215,16 +1206,9 @@ namespace UniForge.Services
             if (screenPos == null)
                 return StepResult.Fail($"Cannot resolve screen position for '{GameObjectResolver.GetHierarchyPath(go)}'");
 
-#if ENABLE_INPUT_SYSTEM
-            var simulator = GetInputSystemSimulator();
-            if (simulator == null)
-                return StepResult.Fail("Mouse simulation requires the Input System package.");
-
-            simulator.FocusApplication();
             var pos = screenPos.Value;
-            var simResult = simulator.MouseClick(0, pos.x, pos.y);
-            if (!simResult.Success)
-                return StepResult.Fail(simResult.Error);
+            if (!TryExecuteUiClick(go, pos, out var clickError))
+                return StepResult.Fail(clickError);
 
             var goPath = GameObjectResolver.GetHierarchyPath(go);
             return new StepResult
@@ -1233,15 +1217,54 @@ namespace UniForge.Services
                 Action = "tap_ui",
                 Details = $"path='{goPath}' screen=({pos.x:F1},{pos.y:F1})",
                 Message = $"Tapped UI element: {goPath}",
-                SimulatorType = simulator.Name,
+                SimulatorType = "EventSystem",
                 hit_ui = BuildUiHitFromGameObject(go),
                 ui_hits = new List<UiHitCompact> { BuildUiHitFromGameObject(go) }
             };
-#else
-            return StepResult.Fail(
-                "tap_ui requires the Unity Input System package (com.unity.inputsystem). " +
-                "Install it using the package-manager tool: action='add', package_id='com.unity.inputsystem'");
-#endif
+        }
+
+        internal static bool TryExecuteUiClick(GameObject target, Vector2 screenPosition, out string error)
+        {
+            return TryExecuteUiClick(target, screenPosition, EventSystem.current, out error);
+        }
+
+        internal static bool TryExecuteUiClick(
+            GameObject target,
+            Vector2 screenPosition,
+            EventSystem eventSystem,
+            out string error)
+        {
+            if (eventSystem == null)
+            {
+                error = "Cannot tap UI element because no active EventSystem exists in the scene";
+                return false;
+            }
+
+            var eventTarget = ExecuteEvents.GetEventHandler<IPointerClickHandler>(target);
+            if (eventTarget == null)
+            {
+                error = $"UI element '{GameObjectResolver.GetHierarchyPath(target)}' has no pointer click handler";
+                return false;
+            }
+
+            var eventData = new PointerEventData(eventSystem)
+            {
+                button = PointerEventData.InputButton.Left,
+                position = screenPosition,
+                pointerId = -1,
+                pointerPress = eventTarget,
+                rawPointerPress = target,
+                eligibleForClick = true,
+                clickCount = 1,
+                clickTime = Time.unscaledTime
+            };
+
+            ExecuteEvents.Execute(eventTarget, eventData, ExecuteEvents.pointerDownHandler);
+            ExecuteEvents.Execute(eventTarget, eventData, ExecuteEvents.pointerUpHandler);
+            ExecuteEvents.Execute(eventTarget, eventData, ExecuteEvents.pointerClickHandler);
+
+            error = null;
+            return true;
         }
 
         /// <summary>
@@ -1259,22 +1282,23 @@ namespace UniForge.Services
                 return StepResult.Fail("Parameter 'text' is required for input_text action");
 
             var append = args.GetBool("append", false);
+            var submit = args.GetBool("submit", false);
             var goPath = GameObjectResolver.GetHierarchyPath(go);
 
             // TMP_InputField を優先して検索
             var tmpInputField = FindTMPInputField(go);
             if (tmpInputField != null)
             {
-                if (append)
-                    SetTMPInputFieldText(tmpInputField, GetTMPInputFieldText(tmpInputField) + text);
-                else
-                    SetTMPInputFieldText(tmpInputField, text);
+                var newText = append ? GetTMPInputFieldText(tmpInputField) + text : text;
+                SetTMPInputFieldText(tmpInputField, newText);
+                if (submit)
+                    InvokeTMPInputFieldEvent(tmpInputField, "onEndEdit", newText);
 
                 return new StepResult
                 {
                     Success = true,
                     Action = "input_text",
-                    Details = $"path='{goPath}' text='{TruncateForDisplay(text, 50)}' type=TMP_InputField",
+                    Details = $"path='{goPath}' text='{TruncateForDisplay(text, 50)}' type=TMP_InputField submit={submit}",
                     Message = $"Set text on {goPath}",
                     hit_ui = BuildUiHitFromGameObject(go)
                 };
@@ -1284,19 +1308,15 @@ namespace UniForge.Services
             var inputField = go.GetComponent<InputField>();
             if (inputField != null)
             {
-                if (append)
-                    inputField.text += text;
-                else
-                    inputField.text = text;
-
-                // onValueChanged / onEndEdit を発火
-                inputField.onValueChanged.Invoke(inputField.text);
+                inputField.text = append ? inputField.text + text : text;
+                if (submit)
+                    inputField.onEndEdit.Invoke(inputField.text);
 
                 return new StepResult
                 {
                     Success = true,
                     Action = "input_text",
-                    Details = $"path='{goPath}' text='{TruncateForDisplay(text, 50)}' type=InputField",
+                    Details = $"path='{goPath}' text='{TruncateForDisplay(text, 50)}' type=InputField submit={submit}",
                     Message = $"Set text on {goPath}",
                     hit_ui = BuildUiHitFromGameObject(go)
                 };
@@ -1312,25 +1332,44 @@ namespace UniForge.Services
 
         private async Awaitable<StepResult> ExecuteWaitForUiState(JsonObject args)
         {
-            var resolveResult = ResolveUiGameObject(args);
-            if (!resolveResult.Success)
-                return StepResult.Fail(resolveResult.Error);
-
-            var go = resolveResult.GameObject;
             var condition = args.GetString("condition");
             if (string.IsNullOrEmpty(condition))
                 return StepResult.Fail("wait_for_ui_state requires 'condition' parameter");
+            if (!IsSupportedUiCondition(condition))
+                return StepResult.Fail($"Unknown wait_for_ui_state condition: '{condition}'");
 
-            var timeoutMs = args.GetInt("timeout_ms", DefaultWaitForTimeoutMs);
-            var pollMs = args.GetInt("poll_interval_ms", DefaultWaitForPollMs);
-            var goPath = GameObjectResolver.GetHierarchyPath(go);
+            var path = args.GetString("path");
+            var name = args.GetString("name");
+            var instanceId = args.HasKey("instance_id") ? (int?)args.GetInt("instance_id") : null;
+            if (string.IsNullOrEmpty(path) && string.IsNullOrEmpty(name) && !instanceId.HasValue)
+                return StepResult.Fail("Parameter 'path', 'name', or 'instance_id' is required");
+
+            var timeoutMs = Math.Max(0, args.GetInt("timeout_ms", DefaultWaitForTimeoutMs));
+            var pollMs = Math.Max(1, args.GetInt("poll_interval_ms", DefaultWaitForPollMs));
+            var identifier = !string.IsNullOrEmpty(path)
+                ? path
+                : !string.IsNullOrEmpty(name)
+                    ? name
+                    : instanceId.Value.ToString();
 
             var startTime = DateTimeOffset.UtcNow;
             var timeout = TimeSpan.FromMilliseconds(timeoutMs);
+            var currentDetail = "UI element not found";
 
             while (DateTimeOffset.UtcNow - startTime < timeout)
             {
+                var resolveResult = ResolveUiGameObject(args);
+                if (!resolveResult.Success)
+                {
+                    currentDetail = resolveResult.Error;
+                    await WaitForEditorTimeAsync(pollMs);
+                    continue;
+                }
+
+                var go = resolveResult.GameObject;
+                var goPath = GameObjectResolver.GetHierarchyPath(go);
                 var (met, detail) = EvaluateUiCondition(go, condition, args);
+                currentDetail = detail;
                 if (met)
                 {
                     var elapsed = (int)(DateTimeOffset.UtcNow - startTime).TotalMilliseconds;
@@ -1351,10 +1390,46 @@ namespace UniForge.Services
                     return StepResult.Fail($"GameObject '{goPath}' was destroyed while waiting");
             }
 
-            var (_, currentDetail) = EvaluateUiCondition(go, condition, args);
             return StepResult.Fail(
                 $"wait_for_ui_state timed out after {timeoutMs}ms. " +
-                $"Path: '{goPath}', condition: '{condition}', current: {currentDetail}");
+                $"Target: '{identifier}', condition: '{condition}', current: {currentDetail}");
+        }
+
+        private static bool IsSupportedUiCondition(string condition)
+        {
+            return condition is "interactable" or "active" or "text_equals" or
+                "text_contains" or "toggle_on" or "slider_value";
+        }
+
+        /// <summary>
+        /// Editor の実時間で待機する。ゲームの timeScale や一時停止状態には依存しない。
+        /// </summary>
+        internal static async Awaitable WaitForEditorTimeAsync(int milliseconds)
+        {
+            if (milliseconds <= 0)
+                return;
+
+            var deadline = EditorApplication.timeSinceStartup + milliseconds / 1000.0;
+            var completionSource = new AwaitableCompletionSource<bool>();
+            EditorApplication.CallbackFunction updateCallback = null;
+            updateCallback = () =>
+            {
+                if (EditorApplication.timeSinceStartup < deadline)
+                    return;
+
+                EditorApplication.update -= updateCallback;
+                completionSource.SetResult(true);
+            };
+
+            EditorApplication.update += updateCallback;
+            try
+            {
+                await completionSource.Awaitable;
+            }
+            finally
+            {
+                EditorApplication.update -= updateCallback;
+            }
         }
 
         /// <summary>
@@ -1442,20 +1517,86 @@ namespace UniForge.Services
         /// <summary>
         /// args から path / name / instance_id で GameObject を解決する。
         /// </summary>
-        private static GameObjectResolver.Result ResolveUiGameObject(JsonObject args)
+        internal static GameObjectResolver.Result ResolveUiGameObject(JsonObject args)
         {
             var path = args.GetString("path");
             var name = args.GetString("name");
             int? instanceId = args.HasKey("instance_id") ? (int?)args.GetInt("instance_id") : null;
 
-            // path が無ければ name を path として扱う
-            if (string.IsNullOrEmpty(path) && !string.IsNullOrEmpty(name))
-                path = name;
-
             if (string.IsNullOrEmpty(path) && !instanceId.HasValue)
-                return GameObjectResolver.Result.Fail("Parameter 'path', 'name', or 'instance_id' is required");
+            {
+                if (string.IsNullOrEmpty(name))
+                    return GameObjectResolver.Result.Fail("Parameter 'path', 'name', or 'instance_id' is required");
 
-            return GameObjectResolver.Resolve(path, instanceId);
+                return FindLoadedSceneObjectByName(name);
+            }
+
+            var result = GameObjectResolver.Resolve(path, instanceId);
+            if (result.Success || instanceId.HasValue)
+                return result;
+
+            // DontDestroyOnLoad シーンは SceneManager.sceneCount に含まれず、
+            // アクティブシーン限定の GameObjectResolver からは検索できない。
+            // Resources 経由でロード済みシーンのオブジェクトを走査する。
+            var normalizedPath = path.Trim('/');
+            var allObjects = Resources.FindObjectsOfTypeAll<GameObject>();
+            foreach (var gameObject in allObjects)
+            {
+                if (!IsLoadedSceneObject(gameObject))
+                    continue;
+
+                if (string.Equals(
+                        GameObjectResolver.GetHierarchyPath(gameObject),
+                        normalizedPath,
+                        StringComparison.Ordinal))
+                {
+                    return GameObjectResolver.Result.Ok(gameObject);
+                }
+            }
+
+            return result;
+        }
+
+        private static GameObjectResolver.Result FindLoadedSceneObjectByName(string name)
+        {
+            var activeMatches = new List<GameObject>();
+            var inactiveMatches = new List<GameObject>();
+            var allObjects = Resources.FindObjectsOfTypeAll<GameObject>();
+            foreach (var gameObject in allObjects)
+            {
+                if (!IsLoadedSceneObject(gameObject) ||
+                    !string.Equals(gameObject.name, name, StringComparison.Ordinal))
+                {
+                    continue;
+                }
+
+                if (gameObject.activeInHierarchy)
+                    activeMatches.Add(gameObject);
+                else
+                    inactiveMatches.Add(gameObject);
+            }
+
+            var matches = activeMatches.Count > 0 ? activeMatches : inactiveMatches;
+            if (matches.Count == 1)
+                return GameObjectResolver.Result.Ok(matches[0]);
+            if (matches.Count == 0)
+                return GameObjectResolver.Result.Fail($"GameObject not found with name: {name}");
+
+            var paths = new List<string>();
+            for (var i = 0; i < Math.Min(matches.Count, 3); i++)
+                paths.Add(GameObjectResolver.GetHierarchyPath(matches[i]));
+
+            return GameObjectResolver.Result.Fail(
+                $"Multiple GameObjects found with name '{name}': {string.Join(", ", paths)}. " +
+                "Use 'path' or 'instance_id' to avoid an ambiguous UI operation.");
+        }
+
+        private static bool IsLoadedSceneObject(GameObject gameObject)
+        {
+            return gameObject != null &&
+                   gameObject.scene.IsValid() &&
+                   gameObject.scene.isLoaded &&
+                   !EditorUtility.IsPersistent(gameObject);
         }
 
         /// <summary>
@@ -1609,12 +1750,14 @@ namespace UniForge.Services
         {
             var prop = tmpInputField.GetType().GetProperty("text");
             prop?.SetValue(tmpInputField, text);
+        }
 
-            // onValueChanged を発火
-            var onValueChanged = tmpInputField.GetType().GetField("onValueChanged");
-            if (onValueChanged != null)
+        private static void InvokeTMPInputFieldEvent(Component tmpInputField, string eventName, string text)
+        {
+            var eventField = tmpInputField.GetType().GetField(eventName);
+            if (eventField != null)
             {
-                var eventObj = onValueChanged.GetValue(tmpInputField);
+                var eventObj = eventField.GetValue(tmpInputField);
                 var invokeMethod = eventObj?.GetType().GetMethod("Invoke", new[] { typeof(string) });
                 invokeMethod?.Invoke(eventObj, new object[] { text });
             }
@@ -1640,13 +1783,13 @@ namespace UniForge.Services
         {
             if (action == "wait")
             {
-                return args.GetNullableInt("ms")
+                return Math.Max(0, args.GetNullableInt("ms")
                     ?? args.GetNullableInt("duration_ms")
                     ?? args.GetNullableInt("wait_ms")
-                    ?? 1000;
+                    ?? 1000);
             }
 
-            return args.GetNullableInt("wait_ms") ?? 0;
+            return Math.Max(0, args.GetNullableInt("wait_ms") ?? 0);
         }
 
         private static List<LogEntryCompact> ToCompactLogs(List<LogEntry> logs)
