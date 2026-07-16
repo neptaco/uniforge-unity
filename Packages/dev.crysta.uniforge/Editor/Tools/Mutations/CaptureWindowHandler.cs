@@ -12,7 +12,7 @@ namespace UniForge.Tools.Mutations
     /// 任意のエディタウィンドウのスクリーンショットを撮影するツール
     /// </summary>
     [Tool("capture-window",
-        Description = "Capture a screenshot of an Editor window (Scene, Game, Inspector, Console, Hierarchy, Project, or custom)",
+        Description = "Capture a screenshot of an Editor window (Scene, Game, Inspector, Console, Hierarchy, Project, or custom) without focusing or activating it",
         Title = "Capture Window",
         Category = ToolCategory.Editor,
         Kind = ToolKind.Mutation,
@@ -35,8 +35,6 @@ namespace UniForge.Tools.Mutations
             [ToolParameter("If true, include the captured PNG as base64 in the response. Default: false")]
             public bool? return_image;
 
-            [ToolParameter("If true, focus the target Editor window before capture. Default: false")]
-            public bool? focus_window;
         }
 
         /// <summary>結果</summary>
@@ -85,7 +83,6 @@ namespace UniForge.Tools.Mutations
             var outputPath = args.GetString("path");
             var gameOnly = args.GetBool("game_only", false);
             var returnImage = args.GetBool("return_image", false);
-            var focusWindow = args.GetBool("focus_window", false);
 
             if (string.IsNullOrEmpty(windowName))
             {
@@ -125,9 +122,7 @@ namespace UniForge.Tools.Mutations
                 return ToolResult.Fail($"Could not get window of type: {typeName}");
             }
 
-            // GrabPixels はフォーカス不要。必要な場合だけ明示的に前面化する。
-            if (focusWindow)
-                window.Focus();
+            // GrabPixels はフォーカス不要。
             window.Repaint();
 
             // デフォルトパス

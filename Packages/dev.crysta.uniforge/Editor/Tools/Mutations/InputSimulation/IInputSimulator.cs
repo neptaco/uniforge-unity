@@ -20,19 +20,6 @@ namespace UniForge.Tools.Mutations.InputSimulation
             };
         }
 
-        /// <summary>Unity Editor の Game View にフォーカスを当てる</summary>
-        public static void FocusGameView()
-        {
-            var gameViewType = typeof(EditorWindow).Assembly.GetType("UnityEditor.GameView");
-            if (gameViewType == null) return;
-
-            var gameView = EditorWindow.GetWindow(gameViewType, false, null, false);
-            if (gameView != null)
-            {
-                gameView.Focus();
-            }
-        }
-
         /// <summary>
         /// ゲーム時間に依存せず、指定時間後に Editor update 上で処理を実行する。
         /// timeScale=0 や Editor がバックグラウンドの状態でも duration_ms を尊重する。
@@ -126,10 +113,5 @@ namespace UniForge.Tools.Mutations.InputSimulation
         /// <summary>マウススクロール</summary>
         InputSimulationResult MouseScroll(float delta);
 
-        /// <summary>
-        /// アプリケーションをフォアグラウンドにして入力を受け付ける状態にする
-        /// OS ネイティブシミュレーターで必要
-        /// </summary>
-        void FocusApplication();
     }
 }

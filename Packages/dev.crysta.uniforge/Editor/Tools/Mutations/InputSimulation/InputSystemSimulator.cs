@@ -10,31 +10,23 @@ using UnityEngine.InputSystem.LowLevel;
 namespace UniForge.Tools.Mutations.InputSimulation
 {
     /// <summary>
-    /// Unity Input System + OS ネイティブのハイブリッド入力シミュレーター。
-    /// マウス位置: Mouse.WarpCursorPosition で物理カーソルを移動し、QueueStateEvent で Input System にも反映。
-    /// マウスボタン: CGEvent (macOS) で OS レベルのイベントを送信し、Old Input Manager にも反映。
-    /// キーボード: Input System の QueueStateEvent を使用。
+    /// Unity Input System のイベントキューだけを使用する入力シミュレーター。
+    /// Editor の前面化や物理カーソル操作を行わないため、バックグラウンドで利用できる。
     /// </summary>
     public class InputSystemSimulator : IInputSimulator
     {
         public string Name => "InputSystem";
 
-        public bool IsAvailable => Mouse.current != null || Keyboard.current != null;
+        public bool IsAvailable => true;
 
-#if UNITY_EDITOR_OSX
-        private MacOSInputSimulator _macOS;
-        private MacOSInputSimulator MacOS => _macOS ??= new MacOSInputSimulator();
-#elif UNITY_EDITOR_WIN
-        // Windows では static メソッドを使用するためインスタンスは不要
-#endif
+        private Keyboard _syntheticKeyboard;
+        private Mouse _syntheticMouse;
 
         #region Keyboard
 
         public InputSimulationResult KeyDown(string key)
         {
-            var keyboard = Keyboard.current;
-            if (keyboard == null)
-                return InputSimulationResult.Fail("No keyboard device available");
+            var keyboard = GetOrCreateKeyboard();
             if (string.IsNullOrEmpty(key))
                 return InputSimulationResult.Fail("Parameter 'key' is required");
 
@@ -53,9 +45,7 @@ namespace UniForge.Tools.Mutations.InputSimulation
 
         public InputSimulationResult KeyUp(string key)
         {
-            var keyboard = Keyboard.current;
-            if (keyboard == null)
-                return InputSimulationResult.Fail("No keyboard device available");
+            var keyboard = GetOrCreateKeyboard();
             if (string.IsNullOrEmpty(key))
                 return InputSimulationResult.Fail("Parameter 'key' is required");
 
@@ -74,9 +64,7 @@ namespace UniForge.Tools.Mutations.InputSimulation
 
         public InputSimulationResult KeyPress(string key, int durationMs = 100)
         {
-            var keyboard = Keyboard.current;
-            if (keyboard == null)
-                return InputSimulationResult.Fail("No keyboard device available");
+            var keyboard = GetOrCreateKeyboard();
             if (string.IsNullOrEmpty(key))
                 return InputSimulationResult.Fail("Parameter 'key' is required");
 
@@ -111,18 +99,11 @@ namespace UniForge.Tools.Mutations.InputSimulation
 
         public InputSimulationResult MouseDown(int button, float? x = null, float? y = null)
         {
-            var mouse = Mouse.current;
-            if (mouse == null)
-                return InputSimulationResult.Fail("No mouse device available");
+            var mouse = GetOrCreateMouse();
 
-            // 物理カーソルを移動 + Input System に位置反映 + CGEvent 移動イベント送信
             if (x.HasValue && y.HasValue)
-                WarpAndQueuePosition(mouse, x.Value, y.Value);
+                QueuePosition(mouse, x.Value, y.Value);
 
-            // CGEvent でボタンイベント送信（Old Input Manager 対応）
-            PostNativeMouseButton(button, true);
-
-            // Input System 側にもボタン状態を反映
             var buttonControl = GetMouseButtonControl(mouse, button);
             if (buttonControl != null)
             {
@@ -143,14 +124,10 @@ namespace UniForge.Tools.Mutations.InputSimulation
 
         public InputSimulationResult MouseUp(int button, float? x = null, float? y = null)
         {
-            var mouse = Mouse.current;
-            if (mouse == null)
-                return InputSimulationResult.Fail("No mouse device available");
+            var mouse = GetOrCreateMouse();
 
             if (x.HasValue && y.HasValue)
-                WarpAndQueuePosition(mouse, x.Value, y.Value);
-
-            PostNativeMouseButton(button, false);
+                QueuePosition(mouse, x.Value, y.Value);
 
             var buttonControl = GetMouseButtonControl(mouse, button);
             if (buttonControl != null)
@@ -172,15 +149,10 @@ namespace UniForge.Tools.Mutations.InputSimulation
 
         public InputSimulationResult MouseClick(int button, float? x = null, float? y = null)
         {
-            var mouse = Mouse.current;
-            if (mouse == null)
-                return InputSimulationResult.Fail("No mouse device available");
+            var mouse = GetOrCreateMouse();
 
             if (x.HasValue && y.HasValue)
-                WarpAndQueuePosition(mouse, x.Value, y.Value);
-
-            // Button down (CGEvent + QueueStateEvent)
-            PostNativeMouseButton(button, true);
+                QueuePosition(mouse, x.Value, y.Value);
 
             var buttonControl = GetMouseButtonControl(mouse, button);
             if (buttonControl != null)
@@ -197,8 +169,6 @@ namespace UniForge.Tools.Mutations.InputSimulation
             // Button up は次フレームで
             EditorApplication.delayCall += () =>
             {
-                PostNativeMouseButton(button, false);
-
                 if (mouse != null && Mouse.current == mouse && buttonControl != null)
                 {
                     using (StateEvent.From(mouse, out var upPtr))
@@ -219,44 +189,25 @@ namespace UniForge.Tools.Mutations.InputSimulation
 
         public InputSimulationResult MouseMove(float x, float y)
         {
-            var mouse = Mouse.current;
-            if (mouse == null)
-                return InputSimulationResult.Fail("No mouse device available");
+            var mouse = GetOrCreateMouse();
 
-            WarpAndQueuePosition(mouse, x, y);
+            QueuePosition(mouse, x, y);
 
             return InputSimulationResult.Ok("mouse_move", $"Mouse moved to ({x:F1}, {y:F1})",
                 $"Simulated mouse move to ({x:F1}, {y:F1})", Name);
         }
 
-        /// <summary>
-        /// ドラッグ中のマウス移動（WarpCursorPosition + QueueStateEvent + NSEvent LeftMouseDragged）
-        /// </summary>
+        /// <summary>ドラッグ中のマウス位置を Input System に反映する</summary>
         public void MouseDragMove(int button, float x, float y)
         {
-            var mouse = Mouse.current;
-            if (mouse == null) return;
+            var mouse = GetOrCreateMouse();
 
-            WarpAndQueuePosition(mouse, x, y);
-
-            // ドラッグ中の移動イベントを送信（Old Input Manager 対応）
-            // WarpAndQueuePosition 内の SendNativeMouseMoveEvent は MouseMoved を送信するが、
-            // ドラッグ中は MouseDragged イベントが必要。
-#if UNITY_EDITOR_OSX
-            // NSEvent LeftMouseDragged を送信
-            MacOS.SendNSMouseEvent(button, true, isDrag: true);
-#elif UNITY_EDITOR_WIN
-            // Windows では SendInput(MOUSEEVENTF_MOVE) がドラッグ中も WM_MOUSEMOVE として届く。
-            // ボタン押下中の MOUSEMOVE は OS が自動的にドラッグとして扱う。
-            // WarpAndQueuePosition 内で既に SendNativeMouseMoveEvent を呼んでいるため追加不要。
-#endif
+            QueuePosition(mouse, x, y);
         }
 
         public InputSimulationResult MouseScroll(float delta)
         {
-            var mouse = Mouse.current;
-            if (mouse == null)
-                return InputSimulationResult.Fail("No mouse device available");
+            var mouse = GetOrCreateMouse();
 
             using (StateEvent.From(mouse, out var eventPtr))
             {
@@ -268,65 +219,41 @@ namespace UniForge.Tools.Mutations.InputSimulation
                 $"Simulated mouse scroll: {delta}", Name);
         }
 
-        /// <summary>
-        /// 物理カーソルを移動し、QueueStateEvent で Input System に位置を反映し、
-        /// NSEvent で OS レベルの移動イベントを送信（Old Input Manager 対応）。
-        /// </summary>
-        private void WarpAndQueuePosition(Mouse mouse, float x, float y)
+        /// <summary>Input System に仮想マウス位置を反映する</summary>
+        private static void QueuePosition(Mouse mouse, float x, float y)
         {
-            // WarpCursorPosition で物理カーソルを移動（Unity が内部的に正しい OS 座標に変換）
-            mouse.WarpCursorPosition(new Vector2(x, y));
-
-            // macOS: CGWarpMouseCursorPosition 後の 0.25 秒イベント抑制を解除
-#if UNITY_EDITOR_OSX
-            MacOSInputSimulator.ReenableMouseEventSuppression();
-#endif
-
-            // Input System に位置を反映
             using (StateEvent.From(mouse, out var eventPtr))
             {
                 mouse.position.WriteValueIntoEvent(new Vector2(x, y), eventPtr);
                 InputSystem.QueueEvent(eventPtr);
             }
-
-            // OS ネイティブの移動イベントを送信（Old Input Manager 対応）
-            // WarpCursorPosition はカーソル移動のみでイベントを生成しない。
-            // macOS: NSEvent 経由（CGWarp 抑制の影響を受けない）
-            // Windows: SendInput(MOUSEEVENTF_MOVE) で WM_MOUSEMOVE を発行
-#if UNITY_EDITOR_OSX
-            MacOS.SendNSMouseMoveEvent();
-#elif UNITY_EDITOR_WIN
-            WindowsInputSimulator.SendNativeMouseMoveEvent();
-#endif
-        }
-
-        /// <summary>
-        /// OS ネイティブのマウスボタンイベントを NSEvent 経由で送信（Old Input Manager 対応）。
-        /// </summary>
-        private void PostNativeMouseButton(int button, bool isDown)
-        {
-            // OS ネイティブのマウスボタンイベントを送信（Old Input Manager 対応）
-#if UNITY_EDITOR_OSX
-            // NSEvent 経由で送信（CGWarpMouseCursorPosition の抑制の影響を受けない）
-            MacOS.SendNSMouseEvent(button, isDown);
-#elif UNITY_EDITOR_WIN
-            // SendInput API で WM_LBUTTONDOWN/UP 等を発行
-            WindowsInputSimulator.SendNativeMouseButtonEvent(button, isDown);
-#endif
         }
 
         #endregion
 
-        public void FocusApplication()
+        #region Helpers
+
+        private Keyboard GetOrCreateKeyboard()
         {
-#if UNITY_EDITOR_OSX
-            MacOS.FocusApplication();
-#elif UNITY_EDITOR_WIN
-            WindowsInputSimulator.FocusUnityApplication();
-#endif
+            if (Keyboard.current != null)
+                return Keyboard.current;
+
+            if (_syntheticKeyboard == null || !_syntheticKeyboard.added)
+                _syntheticKeyboard = InputSystem.AddDevice<Keyboard>();
+
+            return _syntheticKeyboard;
         }
 
-        #region Helpers
+        private Mouse GetOrCreateMouse()
+        {
+            if (Mouse.current != null)
+                return Mouse.current;
+
+            if (_syntheticMouse == null || !_syntheticMouse.added)
+                _syntheticMouse = InputSystem.AddDevice<Mouse>();
+
+            return _syntheticMouse;
+        }
 
         private static string GetButtonName(int button) => InputSimulatorUtils.GetButtonName(button);
 

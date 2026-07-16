@@ -72,6 +72,28 @@ namespace UniForge.Tests
         }
 
         [UnityTest]
+        public IEnumerator AutoPlay_KeyboardAndMouseUseBackgroundSafeInputSystemPath()
+        {
+            var keyDown = AutoPlayService.Instance.ExecuteStep(JsonObject.Parse(
+                "{\"action\":\"key_down\",\"key\":\"a\"}"));
+
+            Assert.IsTrue(keyDown.Success, keyDown.Error);
+            Assert.AreEqual("InputSystem", keyDown.SimulatorType);
+            yield return null;
+
+            var keyUp = AutoPlayService.Instance.ExecuteStep(JsonObject.Parse(
+                "{\"action\":\"key_up\",\"key\":\"a\"}"));
+            Assert.IsTrue(keyUp.Success, keyUp.Error);
+            Assert.AreEqual("InputSystem", keyUp.SimulatorType);
+
+            var mouseMove = AutoPlayService.Instance.ExecuteStep(JsonObject.Parse(
+                "{\"action\":\"mouse_move\",\"x\":120,\"y\":80}"));
+            Assert.IsTrue(mouseMove.Success, mouseMove.Error);
+            Assert.AreEqual("InputSystem", mouseMove.SimulatorType);
+            yield return null;
+        }
+
+        [UnityTest]
         public IEnumerator AutoPlay_WaitMs_CompletesWhenTimeScaleIsZero()
         {
             var previousTimeScale = Time.timeScale;

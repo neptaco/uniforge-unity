@@ -156,14 +156,6 @@ namespace UniForge.Tests
             }
         }
 
-        [Test]
-        public void AutoPlay_InputSystemKeyboard_DoesNotRequireEditorFocus()
-        {
-            var simulator = new InputSystemSimulator();
-
-            Assert.IsFalse(AutoPlayService.ShouldFocusApplicationForKeyboard(simulator));
-        }
-
         [UnityTest]
         public IEnumerator InputSimulatorUtils_ScheduleAfterMilliseconds_HonorsDuration()
         {
@@ -703,6 +695,19 @@ namespace UniForge.Tests
 
             var rootProperties = (Dictionary<string, object>)definition.inputSchema["properties"];
             Assert.IsTrue(rootProperties.ContainsKey("return_image"));
+            Assert.IsFalse(rootProperties.ContainsKey("focus_window"));
+        }
+
+        [Test]
+        public void AutoPlayHandler_CaptureStepDoesNotExposeFocusWindow()
+        {
+            var handler = new AutoPlayHandler();
+            var rootProperties = (Dictionary<string, object>)handler.Definition.inputSchema["properties"];
+            var stepsSchema = (Dictionary<string, object>)rootProperties["steps"];
+            var stepSchema = (Dictionary<string, object>)stepsSchema["items"];
+            var stepProperties = (Dictionary<string, object>)stepSchema["properties"];
+
+            Assert.IsFalse(stepProperties.ContainsKey("focus_window"));
         }
 
         [Test]

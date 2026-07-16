@@ -10,7 +10,7 @@ namespace UniForge.Tools.Mutations
     /// コアロジックは AutoPlayService に委譲。
     /// </summary>
     [Tool("simulate-input",
-        Description = "Simulate keyboard, mouse, and UI input during play mode. Prefer tap_ui for UI controls: it dispatches through EventSystem without activating the Unity Editor or moving the physical cursor. input_text sets text on InputField/TMP_InputField. Coordinate-based mouse simulation requires the Input System package and may activate Unity. Use wait_ms to wait after the action and collect game logs in the response.",
+        Description = "Simulate keyboard, mouse, and UI input during play mode without activating the Unity Editor or moving the physical cursor. Keyboard and coordinate mouse actions inject Input System events; tap_ui dispatches through EventSystem; input_text sets InputField/TMP_InputField text directly. Legacy Input Manager injection is intentionally unsupported. Use wait_ms to wait after the action and collect game logs in the response.",
         Title = "Simulate Input",
         Category = ToolCategory.Input,
         Kind = ToolKind.Mutation,

@@ -13,7 +13,7 @@ namespace UniForge.Tools.Mutations
     /// wait_for_log, wait_for_object, capture 等の E2E テスト用アクションを持つ。
     /// </summary>
     [Tool("auto-play",
-        Description = "Execute a sequence of play mode steps: input simulation (including background-safe UI path-based tap_ui and input_text), log/object/UI-state waits, assertions, and captures. Prefer tap_ui for UI controls because it does not activate the Unity Editor or move the physical cursor. Steps can be inline or loaded from a scenario file.",
+        Description = "Execute a sequence of background-safe play mode steps: Input System keyboard/mouse events, EventSystem UI actions, waits, assertions, and captures. It never activates the Unity Editor or moves the physical cursor. Keyboard and coordinate mouse actions require the Input System package; legacy Input Manager injection is intentionally unsupported. Steps can be inline or loaded from a scenario file.",
         Title = "Auto Play",
         Category = ToolCategory.Input,
         Kind = ToolKind.Mutation,
@@ -26,7 +26,7 @@ namespace UniForge.Tools.Mutations
         {
             public class Step
             {
-                [ToolParameter("Action type: key_down, key_up, key_press, mouse_click, tap_ui, input_text, wait, wait_for_log, wait_for_object, wait_for_ui_state, capture, etc. Prefer tap_ui for UI controls; it does not activate Unity or move the physical cursor.", Required = true)]
+                [ToolParameter("Action type: key_down, key_up, key_press, mouse_click, tap_ui, input_text, wait, wait_for_log, wait_for_object, wait_for_ui_state, capture, etc. All actions run without activating Unity or moving the physical cursor.", Required = true)]
                 public string action;
 
                 [ToolParameter("Unique ID for this step. Can be referenced by 'since' in later wait_for_log steps.")]
@@ -119,8 +119,6 @@ namespace UniForge.Tools.Mutations
                 [ToolParameter("For capture: capture only 3D render without UI (default: false)")]
                 public bool? game_only;
 
-                [ToolParameter("For capture: if true, focus the Game window before capture. Default: false")]
-                public bool? focus_window;
             }
 
             [ToolParameter("Array of steps to execute sequentially (mutually exclusive with scenario_file)")]

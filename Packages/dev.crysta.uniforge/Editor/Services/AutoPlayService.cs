@@ -408,7 +408,6 @@ namespace UniForge.Services
         {
             var filename = args.GetString("filename");
             var gameOnly = args.GetBool("game_only", false);
-            var focusWindow = args.GetBool("focus_window", false);
 
             string outputPath;
             if (!string.IsNullOrEmpty(filename))
@@ -451,8 +450,6 @@ namespace UniForge.Services
                 if (gameView == null)
                     return StepResult.Fail("Game View not found");
 
-                if (focusWindow)
-                    gameView.Focus();
                 gameView.Repaint();
 
                 if (!TryCaptureWindowInternal(gameView, outputPath, out var width, out var height))
@@ -690,15 +687,14 @@ namespace UniForge.Services
         {
             var simulator = GetKeyboardSimulator();
             if (simulator == null)
-                return InputSimulationResult.Fail("No input simulator available for keyboard simulation.");
+                return InputSimulationResult.Fail(
+                    "Keyboard simulation requires the Unity Input System package (com.unity.inputsystem). " +
+                    "Legacy Input Manager injection is unsupported because it requires foreground OS input.");
             if (!simulator.IsAvailable)
                 return InputSimulationResult.Fail($"Input simulator '{simulator.Name}' is not available.");
 
             var key = args.GetString("key");
             var durationMs = args.GetNullableInt("duration_ms") ?? 100;
-
-            if (ShouldFocusApplicationForKeyboard(simulator))
-                simulator.FocusApplication();
 
             return action switch
             {
@@ -707,17 +703,6 @@ namespace UniForge.Services
                 "key_press" => simulator.KeyPress(key, durationMs),
                 _ => InputSimulationResult.Fail($"Invalid keyboard action: {action}. Valid actions: key_down, key_up, key_press")
             };
-        }
-
-        internal static bool ShouldFocusApplicationForKeyboard(IInputSimulator simulator)
-        {
-#if ENABLE_INPUT_SYSTEM
-            // Input System の QueueEvent は Editor がバックグラウンドでも処理される。
-            // OS ネイティブ入力へフォールバックした場合だけ前面化が必要。
-            return simulator is not InputSystemSimulator;
-#else
-            return true;
-#endif
         }
 
         private IInputSimulator GetKeyboardSimulator()
@@ -736,14 +721,7 @@ namespace UniForge.Services
             if (inputSystemSimulator.IsAvailable)
                 return inputSystemSimulator;
 #endif
-
-#if UNITY_EDITOR_OSX
-            return new MacOSInputSimulator();
-#elif UNITY_EDITOR_WIN
-            return new WindowsInputSimulator();
-#else
             return null;
-#endif
         }
 
         // ---------------------------------------------------------------
@@ -755,9 +733,7 @@ namespace UniForge.Services
 #if ENABLE_INPUT_SYSTEM
             var simulator = GetInputSystemSimulator();
             if (simulator == null)
-                return InputSimulationResult.Fail("Mouse simulation requires the Input System package, but no mouse device is available.");
-
-            simulator.FocusApplication();
+                return InputSimulationResult.Fail("Mouse simulation requires the Unity Input System package (com.unity.inputsystem).");
 
             var coordinate = args.GetString("coordinate") ?? "screen";
             bool isWorld = coordinate.Equals("world", StringComparison.OrdinalIgnoreCase);
