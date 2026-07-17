@@ -12,7 +12,7 @@ Unity Editor 側の UniForge 統合パッケージ。Go CLI daemon と JSON-RPC 
 Unity Package Manager の "Add package from git URL" で以下を指定:
 
 ```
-https://github.com/neptaco/uniforge-unity.git?path=Packages/dev.crysta.uniforge#v0.9.0
+https://github.com/neptaco/uniforge-unity.git?path=Packages/dev.crysta.uniforge#v0.10.0
 ```
 
 ## Package Structure
