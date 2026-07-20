@@ -184,6 +184,24 @@ namespace UniForge.Tests
 
             StringAssert.DoesNotContain("\"pendingRequestIds\"", request);
             StringAssert.DoesNotContain("\"gitRoot\"", request);
+            StringAssert.DoesNotContain("\"consoleLogPath\"", request);
+        }
+
+        [Test]
+        public void BuildUnityRegisterRequest_WithConsoleLogPath_IncludesConsoleLogPath()
+        {
+            var request = UniForgeProtocolMessages.BuildUnityRegisterRequest(
+                "req-1",
+                "project-1",
+                "Project One",
+                null,
+                new List<Dictionary<string, object>>(),
+                new List<string>(),
+                "/Users/me/Library/Logs/Unity/Editor.log");
+
+            StringAssert.Contains(
+                "\"consoleLogPath\":\"/Users/me/Library/Logs/Unity/Editor.log\"",
+                request);
         }
 
         [Test]
