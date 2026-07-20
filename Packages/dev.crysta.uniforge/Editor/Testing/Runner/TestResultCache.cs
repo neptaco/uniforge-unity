@@ -70,6 +70,7 @@ namespace UniForge.TestRunner
         public string mode;         // "EditMode", "PlayMode", "Both"
         public long startTime;
         public long endTime;
+        public bool runStarted;
         public bool completed;
         public bool success;
         public bool aborted;
@@ -432,6 +433,19 @@ namespace UniForge.TestRunner
             PersistRun(run);
         }
 
+        internal void MarkRunStarted(string runId)
+        {
+            EnsureLoaded();
+            var run = GetRun(runId);
+            if (run == null || run.completed)
+            {
+                return;
+            }
+
+            run.runStarted = true;
+            PersistRun(run);
+        }
+
         /// <summary>
         /// Mark a run as completed
         /// </summary>
@@ -630,6 +644,7 @@ namespace UniForge.TestRunner
                 mode = run.mode,
                 startTime = run.startTime,
                 endTime = run.endTime,
+                runStarted = run.runStarted,
                 completed = run.completed,
                 success = run.success,
                 aborted = run.aborted,
