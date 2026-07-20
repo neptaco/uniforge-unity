@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 
 namespace UniForge.Tools.Mutations
 {
@@ -28,6 +29,8 @@ namespace UniForge.Tools.Mutations
         public bool isCompiling;
         public bool success;
         public bool domainReloaded;
+        public List<CompilerError> errors;
+        public List<CompilerError> warnings;
         public string message;
     }
 
@@ -115,13 +118,19 @@ namespace UniForge.Tools.Mutations
 
             if (domainReloaded)
             {
+                var reloadSuccess = status.success && status.errors.Count == 0;
+
                 return ToolResult.Complete(new CompilationDomainReloadOutput
                 {
-                    isCompiling = false,
-                    success = true,
+                    isCompiling = status.isCompiling,
+                    success = reloadSuccess,
                     domainReloaded = true,
-                    message = "Compilation completed successfully (domain reloaded)"
-                });
+                    errors = status.errors,
+                    warnings = status.warnings,
+                    message = reloadSuccess
+                        ? "Compilation completed successfully (domain reloaded)"
+                        : $"Compilation completed with {status.errors.Count} error(s) after domain reload"
+                }, success: reloadSuccess);
             }
 
             return ToolResult.Complete(status, success: status.success);

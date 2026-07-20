@@ -26,6 +26,15 @@ namespace UniForge
             column = msg.column;
             type = msg.type == CompilerMessageType.Error ? "error" : "warning";
         }
+
+        internal CompilerError(string message, string file, int line, int column, string type)
+        {
+            this.message = message;
+            this.file = file;
+            this.line = line;
+            this.column = column;
+            this.type = type;
+        }
     }
 
     [Serializable]
@@ -147,6 +156,32 @@ namespace UniForge
         public List<CompilerError> GetWarnings()
         {
             return new List<CompilerError>(_warnings);
+        }
+
+        internal void SeedForTest(
+            bool isCompiling,
+            long lastCompileEndTime,
+            bool success,
+            List<CompilerError> errors,
+            List<CompilerError> warnings)
+        {
+            _isCompiling = isCompiling;
+            _lastCompileEndTime = lastCompileEndTime;
+            _lastCompileSuccess = success;
+            _errors.Clear();
+            _errors.AddRange(errors);
+            _warnings.Clear();
+            _warnings.AddRange(warnings);
+        }
+
+        internal void ResetForTest()
+        {
+            _isCompiling = false;
+            _lastCompileStartTime = 0;
+            _lastCompileEndTime = 0;
+            _lastCompileSuccess = true;
+            _errors.Clear();
+            _warnings.Clear();
         }
     }
 }
