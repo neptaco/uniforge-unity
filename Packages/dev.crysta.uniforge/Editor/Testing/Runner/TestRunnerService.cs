@@ -49,6 +49,9 @@ namespace UniForge.TestRunner
         [SerializeField]
         private string _currentExecutionGuid;
 
+        [NonSerialized]
+        private string _startingRunId;
+
         // Cached test lists
         private List<TestInfo> _cachedEditModeTests;
         private List<TestInfo> _cachedPlayModeTests;
@@ -103,22 +106,88 @@ namespace UniForge.TestRunner
                 return;
             }
 
+            if (string.IsNullOrEmpty(_currentExecutionGuid))
+            {
+                Debug.LogWarning(
+                    $"[TestRunner] Cannot recover callbacks for run '{cache.CurrentRunId}' because its execution guid is unavailable");
+                return;
+            }
+
             EnsureApiInitialized();
             var run = cache.GetRun(cache.CurrentRunId);
-            RegisterCallbacks(cache.CurrentRunId, run != null ? run.startTime : 0);
+            RegisterCallbacks(
+                cache.CurrentRunId,
+                run != null ? run.startTime : 0,
+                _currentExecutionGuid);
             Debug.Log($"[TestRunner] Re-registered callbacks for run '{cache.CurrentRunId}' after domain reload");
         }
 
-        private void RegisterCallbacks(string runId, long runStartTimeUnixMs)
+        private void RegisterCallbacks(
+            string runId,
+            long runStartTimeUnixMs,
+            string executionGuid = null)
         {
-            if (_currentCallbacks != null && _api != null)
+            if (_currentCallbacks != null)
             {
-                _api.UnregisterCallbacks(_currentCallbacks);
+                UnregisterCallbacks(_currentCallbacks.RunId);
             }
 
-            _currentCallbacks = new TestRunnerCallbacks(runId, runStartTimeUnixMs);
+            _currentCallbacks = new TestRunnerCallbacks(
+                runId,
+                runStartTimeUnixMs,
+                IsCurrentExecution);
+            _currentCallbacks.BindExecutionGuid(executionGuid);
             _currentCallbacks.OnRunCompleted += HandleRunCompleted;
             _api.RegisterCallbacks(_currentCallbacks);
+        }
+
+        private bool IsCurrentExecution(string runId, string executionGuid)
+        {
+            var callbacks = _currentCallbacks;
+            if (callbacks == null ||
+                !string.Equals(callbacks.RunId, runId, StringComparison.Ordinal) ||
+                !string.Equals(TestResultCache.instance.CurrentRunId, runId, StringComparison.Ordinal))
+            {
+                return false;
+            }
+
+            if (string.IsNullOrEmpty(executionGuid))
+            {
+                return string.Equals(_startingRunId, runId, StringComparison.Ordinal) &&
+                       string.IsNullOrEmpty(_currentExecutionGuid);
+            }
+
+            return string.Equals(_currentExecutionGuid, executionGuid, StringComparison.Ordinal);
+        }
+
+        private bool UnregisterCallbacks(string runId)
+        {
+            var callbacks = _currentCallbacks;
+            if (callbacks == null ||
+                !string.Equals(callbacks.RunId, runId, StringComparison.Ordinal))
+            {
+                return false;
+            }
+
+            callbacks.OnRunCompleted -= HandleRunCompleted;
+            if (_api != null)
+            {
+                try
+                {
+                    _api.UnregisterCallbacks(callbacks);
+                }
+                catch (Exception ex)
+                {
+                    Debug.LogWarning($"[TestRunner] Failed to unregister test callbacks: {ex.Message}");
+                }
+            }
+
+            if (ReferenceEquals(_currentCallbacks, callbacks))
+            {
+                _currentCallbacks = null;
+            }
+
+            return true;
         }
 
         /// <summary>
@@ -341,7 +410,9 @@ namespace UniForge.TestRunner
             var cache = TestResultCache.instance;
             var run = cache.CreateRun(settings.Mode);
 
+            _currentExecutionGuid = null;
             RegisterCallbacks(run.runId, run.startTime);
+            var callbacks = _currentCallbacks;
 
             // Build filter
             var filter = new Filter
@@ -373,17 +444,38 @@ namespace UniForge.TestRunner
 
             Debug.Log($"[TestRunner] Starting test run: {run.runId}, mode: {settings.Mode}, testNames: {(settings.TestNames != null ? string.Join(",", settings.TestNames) : "null")}");
 
+            _startingRunId = run.runId;
             try
             {
-                _currentExecutionGuid = _api.Execute(executionSettings);
+                var executionGuid = _api.Execute(executionSettings);
+                if (ReferenceEquals(_currentCallbacks, callbacks) &&
+                    string.Equals(cache.CurrentRunId, run.runId, StringComparison.Ordinal))
+                {
+                    _currentExecutionGuid = executionGuid;
+                    callbacks.BindExecutionGuid(executionGuid);
+                }
             }
             catch (Exception ex)
             {
                 error = $"Failed to start tests: {ex.Message}";
                 Debug.LogError($"[TestRunner] {error}");
-                cache.CompleteRun(run.runId, 0);
+                try
+                {
+                    cache.CompleteRun(run.runId, 0);
+                }
+                finally
+                {
+                    _currentExecutionGuid = null;
+                    UnregisterCallbacks(run.runId);
+                }
                 return null;
             }
+            finally
+            {
+                _startingRunId = null;
+            }
+
+            EditorApplication.QueuePlayerLoopUpdate();
 
             return run.runId;
         }
@@ -406,16 +498,24 @@ namespace UniForge.TestRunner
             var isCurrentRun = string.Equals(cache.CurrentRunId, runId, StringComparison.Ordinal) &&
                                _currentCallbacks != null &&
                                string.Equals(_currentCallbacks.RunId, runId, StringComparison.Ordinal);
-            if (isCurrentRun && !string.IsNullOrEmpty(_currentExecutionGuid))
+            if (isCurrentRun)
             {
-                TestRunnerApi.CancelTestRun(_currentExecutionGuid);
-                _currentExecutionGuid = null;
-            }
-
-            if (_currentCallbacks != null && _currentCallbacks.RunId == runId && _api != null)
-            {
-                _api.UnregisterCallbacks(_currentCallbacks);
-                _currentCallbacks = null;
+                try
+                {
+                    if (!string.IsNullOrEmpty(_currentExecutionGuid))
+                    {
+                        TestRunnerApi.CancelTestRun(_currentExecutionGuid);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Debug.LogWarning($"[TestRunner] Failed to cancel TestRunnerApi run: {ex.Message}");
+                }
+                finally
+                {
+                    _currentExecutionGuid = null;
+                    UnregisterCallbacks(runId);
+                }
             }
 
             cache.AbortRun(runId, reason, durationSeconds);
@@ -423,13 +523,14 @@ namespace UniForge.TestRunner
 
         private void HandleRunCompleted(string runId)
         {
-            _currentExecutionGuid = null;
-
-            if (_currentCallbacks != null)
+            if (_currentCallbacks == null ||
+                !string.Equals(_currentCallbacks.RunId, runId, StringComparison.Ordinal))
             {
-                _api.UnregisterCallbacks(_currentCallbacks);
-                _currentCallbacks = null;
+                return;
             }
+
+            _currentExecutionGuid = null;
+            UnregisterCallbacks(runId);
 
             OnRunCompleted?.Invoke(runId);
         }
@@ -525,11 +626,12 @@ namespace UniForge.TestRunner
         private void OnDisable()
         {
             // Cleanup TestRunnerApi to prevent memory leak
-            if (_currentCallbacks != null && _api != null)
+            if (_currentCallbacks != null)
             {
-                _api.UnregisterCallbacks(_currentCallbacks);
-                _currentCallbacks = null;
+                UnregisterCallbacks(_currentCallbacks.RunId);
             }
+
+            _startingRunId = null;
 
             if (_api != null)
             {

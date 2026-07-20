@@ -683,6 +683,330 @@ namespace UniForge.Tests
             Assert.That(result.ResultText, Does.Contain("All tests passed"));
         }
 
+        [Test]
+        public void RunTestsHandler_StartTestsOrWaitForCompilation_WaitsWhileCompiling()
+        {
+            try
+            {
+                CompilationWatcher.Instance.SeedForTest(
+                    isCompiling: true,
+                    lastCompileEndTime: 0,
+                    success: true,
+                    errors: new List<CompilerError>(),
+                    warnings: new List<CompilerError>());
+
+                var handler = new RunTestsHandler();
+
+                // Execute cannot reach this branch while this suite is itself an active test run,
+                // so call the same post-precondition helper used by Execute.
+                var result = handler.StartTestsOrWaitForCompilation(
+                    new TestExecutionSettings { Mode = "EditMode" },
+                    timeoutMs: 5000);
+
+                Assert.IsTrue(result.WaitsForDomainReload);
+                Assert.That(result.ResultText, Does.Contain("Waiting for compilation before test run"));
+                Assert.That(result.ResultText, Does.Contain("\"running\":false"));
+
+                var state = JsonUtility.FromJson<RunTestsHandler.RunTestsWaitState>(
+                    result.DomainReloadStateJson);
+                Assert.IsTrue(state.waiting_for_compile);
+                Assert.AreEqual("EditMode", state.mode);
+            }
+            finally
+            {
+                CompilationWatcher.Instance.ResetForTest();
+            }
+        }
+
+        [Test]
+        public void RunTestsHandler_HasPendingRunTestsRequest_RecognizesCompilationWaitAfterCompletedRun()
+        {
+            var cache = TestResultCache.instance;
+            var completedRun = cache.CreateRun("EditMode");
+            cache.CompleteRun(completedRun.runId, 0.1);
+            PendingDomainReloadToolRequestsStorage.instance.Add(new PendingDomainReloadToolRequest
+            {
+                requestId = "compile-wait",
+                toolName = "run-tests",
+                readyToSend = false,
+                stateJson = JsonUtility.ToJson(CreateCompileWaitState())
+            });
+
+            Assert.IsTrue(RunTestsHandler.HasPendingRunTestsRequest());
+        }
+
+        [Test]
+        public void RunTestsHandler_ResumeAfterDomainReload_ContinuesWaitingWhileCompiling()
+        {
+            try
+            {
+                CompilationWatcher.Instance.SeedForTest(
+                    isCompiling: true,
+                    lastCompileEndTime: 0,
+                    success: true,
+                    errors: new List<CompilerError>(),
+                    warnings: new List<CompilerError>());
+
+                var handler = new RunTestsHandler();
+                var result = ResumeRunTests(
+                    handler,
+                    CreateCompileWaitState(),
+                    elapsedMs: 1000,
+                    timeoutMs: 5000);
+
+                Assert.IsTrue(result.WaitsForDomainReload);
+                var state = JsonUtility.FromJson<RunTestsHandler.RunTestsWaitState>(
+                    result.DomainReloadStateJson);
+                Assert.IsTrue(state.waiting_for_compile);
+            }
+            finally
+            {
+                CompilationWatcher.Instance.ResetForTest();
+            }
+        }
+
+        [Test]
+        public void RunTestsHandler_ResumeAfterDomainReload_FailsWhenCompilationHasErrors()
+        {
+            try
+            {
+                CompilationWatcher.Instance.SeedForTest(
+                    isCompiling: false,
+                    lastCompileEndTime: System.DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                    success: false,
+                    errors: new List<CompilerError>
+                    {
+                        new CompilerError("error CS1002: ; expected", "Test.cs", 1, 1, "error")
+                    },
+                    warnings: new List<CompilerError>());
+
+                var handler = new RunTestsHandler();
+                var result = ResumeRunTests(
+                    handler,
+                    CreateCompileWaitState(),
+                    elapsedMs: 1000,
+                    timeoutMs: 5000);
+
+                Assert.IsFalse(result.Success);
+                Assert.IsFalse(result.WaitsForDomainReload);
+                Assert.That(result.Error, Does.Contain("1 error(s)"));
+            }
+            finally
+            {
+                CompilationWatcher.Instance.ResetForTest();
+            }
+        }
+
+        [Test]
+        public void RunTestsHandler_ResumeAfterDomainReload_WaitsForTestCacheAfterCompilation()
+        {
+            var refreshCalls = 0;
+            var startCalls = 0;
+            try
+            {
+                CompilationWatcher.Instance.SeedForTest(
+                    isCompiling: false,
+                    lastCompileEndTime: 2000,
+                    success: true,
+                    errors: new List<CompilerError>(),
+                    warnings: new List<CompilerError>());
+
+                var handler = new RunTestsHandler
+                {
+                    TestCacheReadyOverrideForTests = () => false,
+                    RefreshTestCacheOverrideForTests = () => refreshCalls++,
+                    DirtyScenesOverrideForTests = () => null,
+                    StartTestsOverrideForTests = _ =>
+                    {
+                        startCalls++;
+                        return null;
+                    }
+                };
+                var state = CreateCompileWaitState();
+                state.test_names = new[] { "UniForge.Tests.Sample" };
+
+                var result = ResumeRunTestsAt(
+                    handler,
+                    state,
+                    requestStartedAt: 1000,
+                    currentTime: 2000,
+                    timeoutMs: 5000);
+
+                Assert.IsTrue(result.WaitsForDomainReload);
+                var resumedState = JsonUtility.FromJson<RunTestsHandler.RunTestsWaitState>(
+                    result.DomainReloadStateJson);
+                Assert.IsTrue(resumedState.waiting_for_compile);
+                Assert.IsTrue(string.IsNullOrEmpty(resumedState.run_id));
+                Assert.AreEqual(1, refreshCalls);
+                Assert.AreEqual(0, startCalls);
+            }
+            finally
+            {
+                CompilationWatcher.Instance.ResetForTest();
+            }
+        }
+
+        [Test]
+        public void RunTestsHandler_ResumeAfterDomainReload_FailsForDirtySceneBeforeStartingTests()
+        {
+            var startCalls = 0;
+            try
+            {
+                CompilationWatcher.Instance.SeedForTest(
+                    isCompiling: false,
+                    lastCompileEndTime: 2000,
+                    success: true,
+                    errors: new List<CompilerError>(),
+                    warnings: new List<CompilerError>());
+
+                var handler = new RunTestsHandler
+                {
+                    TestCacheReadyOverrideForTests = () => true,
+                    DirtyScenesOverrideForTests = () => "DirtyScene",
+                    StartTestsOverrideForTests = _ =>
+                    {
+                        startCalls++;
+                        return null;
+                    }
+                };
+
+                var result = ResumeRunTestsAt(
+                    handler,
+                    CreateCompileWaitState(),
+                    requestStartedAt: 1000,
+                    currentTime: 2000,
+                    timeoutMs: 5000);
+
+                Assert.IsFalse(result.Success);
+                Assert.IsFalse(result.WaitsForDomainReload);
+                Assert.That(result.Error, Does.Contain("Scene(s) have unsaved changes: DirtyScene"));
+                Assert.AreEqual(0, startCalls);
+            }
+            finally
+            {
+                CompilationWatcher.Instance.ResetForTest();
+            }
+        }
+
+        [Test]
+        public void RunTestsHandler_ResumeAfterDomainReload_ResetsTimeoutWhenTestsStart()
+        {
+            try
+            {
+                CompilationWatcher.Instance.SeedForTest(
+                    isCompiling: false,
+                    lastCompileEndTime: 5000,
+                    success: true,
+                    errors: new List<CompilerError>(),
+                    warnings: new List<CompilerError>());
+
+                var cache = TestResultCache.instance;
+                var handler = new RunTestsHandler
+                {
+                    TestCacheReadyOverrideForTests = () => true,
+                    DirtyScenesOverrideForTests = () => null,
+                    StartTestsOverrideForTests = settings => cache.CreateRun(settings.Mode).runId
+                };
+
+                var started = ResumeRunTestsAt(
+                    handler,
+                    CreateCompileWaitState(),
+                    requestStartedAt: 1000,
+                    currentTime: 5000,
+                    timeoutMs: 5000);
+
+                Assert.IsTrue(started.WaitsForDomainReload);
+                Assert.AreEqual(5000, started.DomainReloadTimeoutMs);
+                var startedState = JsonUtility.FromJson<RunTestsHandler.RunTestsWaitState>(
+                    started.DomainReloadStateJson);
+                Assert.IsFalse(startedState.waiting_for_compile);
+                Assert.AreEqual(5000, startedState.test_started_at);
+                Assert.IsFalse(string.IsNullOrEmpty(startedState.run_id));
+                Assert.AreEqual(
+                    cache.GetRun(startedState.run_id).startTime,
+                    startedState.run_start_time);
+
+                // The original request is already older than its timeout, but the test run is not.
+                var beforeTestTimeout = ResumeRunTestsAt(
+                    handler,
+                    startedState,
+                    requestStartedAt: 1000,
+                    currentTime: 9000,
+                    timeoutMs: 5000);
+                Assert.IsTrue(beforeTestTimeout.WaitsForDomainReload);
+                Assert.IsTrue(cache.IsRunning);
+
+                var afterTestTimeout = ResumeRunTestsAt(
+                    handler,
+                    startedState,
+                    requestStartedAt: 1000,
+                    currentTime: 10001,
+                    timeoutMs: 5000);
+                Assert.IsFalse(afterTestTimeout.Success);
+                Assert.That(afterTestTimeout.ResultText, Does.Contain("\"timed_out\":true"));
+
+                var aborted = cache.GetRun(startedState.run_id);
+                Assert.IsTrue(aborted.aborted);
+                Assert.AreEqual(5.001, aborted.durationSeconds, 0.001);
+            }
+            finally
+            {
+                CompilationWatcher.Instance.ResetForTest();
+            }
+        }
+
+        [Test]
+        public void RunTestsHandler_ResumeAfterDomainReload_TimesOutWaitingForCompilation()
+        {
+            try
+            {
+                CompilationWatcher.Instance.SeedForTest(
+                    isCompiling: true,
+                    lastCompileEndTime: 0,
+                    success: true,
+                    errors: new List<CompilerError>(),
+                    warnings: new List<CompilerError>());
+
+                var handler = new RunTestsHandler();
+                var result = ResumeRunTests(
+                    handler,
+                    CreateCompileWaitState(),
+                    elapsedMs: 6000,
+                    timeoutMs: 5000);
+
+                Assert.IsFalse(result.Success);
+                Assert.IsFalse(result.WaitsForDomainReload);
+                Assert.That(result.ResultText, Does.Contain("\"timed_out\":true"));
+                Assert.That(result.ResultText, Does.Contain("waiting for compilation before test run"));
+            }
+            finally
+            {
+                CompilationWatcher.Instance.ResetForTest();
+            }
+        }
+
+        [Test]
+        public void RunTestsHandler_ResumeAfterDomainReload_TimeoutIncludesNeverStartedHint()
+        {
+            var cache = TestResultCache.instance;
+            var run = cache.CreateRun("EditMode");
+            Assert.IsFalse(run.runStarted);
+
+            var handler = new RunTestsHandler();
+            var result = ResumeRunTests(
+                handler,
+                run.runId,
+                run.startTime,
+                elapsedMs: 6000,
+                timeoutMs: 5000);
+
+            Assert.IsFalse(result.Success);
+            Assert.That(
+                result.ResultText,
+                Does.Contain(
+                    " (the test run has not reported starting — the editor may be throttled/unfocused or a compile may be pending)"));
+        }
+
         #endregion
 
         #region CaptureWindowHandler Tests
@@ -825,13 +1149,54 @@ namespace UniForge.Tests
             long elapsedMs,
             long timeoutMs)
         {
-            return ((IDomainReloadResumableTool)handler).ResumeAfterDomainReload(
-                JsonUtility.ToJson(new RunTestsHandler.RunTestsWaitState
+            return ResumeRunTests(
+                handler,
+                new RunTestsHandler.RunTestsWaitState
                 {
                     run_id = runId,
                     run_start_time = runStartTime
-                }),
-                new DomainReloadResumeContext(runStartTime, runStartTime + elapsedMs, timeoutMs));
+                },
+                elapsedMs,
+                timeoutMs);
+        }
+
+        private static ToolResult ResumeRunTests(
+            RunTestsHandler handler,
+            RunTestsHandler.RunTestsWaitState state,
+            long elapsedMs,
+            long timeoutMs)
+        {
+            var requestStartedAt = state.run_start_time > 0
+                ? state.run_start_time
+                : System.DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+
+            return ((IDomainReloadResumableTool)handler).ResumeAfterDomainReload(
+                JsonUtility.ToJson(state),
+                new DomainReloadResumeContext(
+                    requestStartedAt,
+                    requestStartedAt + elapsedMs,
+                    timeoutMs));
+        }
+
+        private static ToolResult ResumeRunTestsAt(
+            RunTestsHandler handler,
+            RunTestsHandler.RunTestsWaitState state,
+            long requestStartedAt,
+            long currentTime,
+            long timeoutMs)
+        {
+            return ((IDomainReloadResumableTool)handler).ResumeAfterDomainReload(
+                JsonUtility.ToJson(state),
+                new DomainReloadResumeContext(requestStartedAt, currentTime, timeoutMs));
+        }
+
+        private static RunTestsHandler.RunTestsWaitState CreateCompileWaitState()
+        {
+            return new RunTestsHandler.RunTestsWaitState
+            {
+                waiting_for_compile = true,
+                mode = "EditMode"
+            };
         }
     }
 }

@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using UniForge.TestRunner;
+using UnityEditor;
 using UnityEngine;
 
 namespace UniForge.Tools.Mutations
@@ -17,11 +18,22 @@ namespace UniForge.Tools.Mutations
         Idempotent = false)]
     public class RunTestsHandler : DomainReloadResumableMutationHandler<RunTestsHandler.RunTestsWaitState>
     {
+        internal Func<bool> TestCacheReadyOverrideForTests { get; set; }
+        internal Action RefreshTestCacheOverrideForTests { get; set; }
+        internal Func<string> DirtyScenesOverrideForTests { get; set; }
+        internal Func<TestExecutionSettings, string> StartTestsOverrideForTests { get; set; }
+
         [Serializable]
         public class RunTestsWaitState
         {
             public string run_id;
             public long run_start_time;
+            public long test_started_at;
+            public bool waiting_for_compile;
+            public string mode;
+            public string[] test_names;
+            public string[] categories;
+            public string[] assemblies;
             public bool has_filter;   // test_names / categories / assemblies のいずれかが明示指定されたか
         }
 
@@ -106,7 +118,7 @@ namespace UniForge.Tools.Mutations
             }
 
             // 未保存のシーン変更をチェック（テスト実行時にダイアログがブロックするのを防ぐ）
-            if (SceneHelper.HasUnsavedSceneChanges(out var dirtyScenes))
+            if (HasUnsavedSceneChanges(out var dirtyScenes))
             {
                 return ToolResult.Fail($"Scene(s) have unsaved changes: {dirtyScenes}. Please save or discard changes before running tests.");
             }
@@ -126,33 +138,46 @@ namespace UniForge.Tools.Mutations
                 Assemblies = ParseCommaSeparated(assemblies)
             };
 
-            var runId = TestRunnerService.instance.StartTests(settings, out var startError);
+            return StartTestsOrWaitForCompilation(settings, args.GetInt("timeout", 300000));
+        }
 
-            if (string.IsNullOrEmpty(runId))
+        internal ToolResult StartTestsOrWaitForCompilation(TestExecutionSettings settings, int timeoutMs)
+        {
+            var state = CreateWaitState(settings);
+            if (CompilationWatcher.Instance.GetStatus().isCompiling)
             {
-                return ToolResult.Fail(string.IsNullOrEmpty(startError)
-                    ? "Failed to start test run"
-                    : $"Failed to start test run: {startError}");
+                state.waiting_for_compile = true;
+                return WaitForDomainReload(
+                    state,
+                    new RunStartedOutput
+                    {
+                        message = "Waiting for compilation before test run",
+                        mode = settings.Mode,
+                        running = false
+                    },
+                    timeoutMs,
+                    250);
             }
 
-            var run = TestResultCache.instance.GetRun(runId);
+            if (!TryStartTests(
+                    settings,
+                    state,
+                    DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                    out var startError))
+            {
+                return StartTestsFailure(startError);
+            }
+
             return WaitForDomainReload(
-                new RunTestsWaitState
-                {
-                    run_id = runId,
-                    run_start_time = run != null ? run.startTime : 0,
-                    has_filter = settings.TestNames != null ||
-                                 settings.Categories != null ||
-                                 settings.Assemblies != null
-                },
+                state,
                 new RunStartedOutput
                 {
                     message = "Test run started",
-                    run_id = runId,
-                    mode = mode,
+                    run_id = state.run_id,
+                    mode = settings.Mode,
                     running = true
                 },
-                args.GetInt("timeout", 300000),
+                timeoutMs,
                 250);
         }
 
@@ -160,12 +185,66 @@ namespace UniForge.Tools.Mutations
             RunTestsWaitState state,
             DomainReloadResumeContext context)
         {
+            if (state.waiting_for_compile)
+            {
+                var compileStatus = CompilationWatcher.Instance.GetStatus();
+                if (compileStatus.isCompiling && !context.IsTimedOut)
+                {
+                    return ContinueAfterDomainReload(state, 250);
+                }
+
+                if (context.IsTimedOut)
+                {
+                    return ToolResult.Complete(new RunTimedOutOutput
+                    {
+                        message = "Timed out waiting for compilation before test run",
+                        timed_out = true,
+                        run_id = state.run_id
+                    }, success: false);
+                }
+
+                if (compileStatus.errors.Count > 0)
+                {
+                    return ToolResult.Fail(
+                        $"Cannot run tests: compilation finished with {compileStatus.errors.Count} error(s)");
+                }
+
+                if (!IsTestCacheReady())
+                {
+                    RefreshTestCache();
+                    return ContinueAfterDomainReload(state, 250);
+                }
+
+                if (HasUnsavedSceneChanges(out var dirtyScenes))
+                {
+                    return ToolResult.Fail(
+                        $"Scene(s) have unsaved changes: {dirtyScenes}. Please save or discard changes before running tests.");
+                }
+
+                var settings = CreateExecutionSettings(state);
+                if (!TryStartTests(
+                        settings,
+                        state,
+                        context.CurrentTimeUnixMs,
+                        out var startError))
+                {
+                    return StartTestsFailure(startError);
+                }
+
+                return WaitForDomainReload(
+                    state,
+                    null,
+                    ClampTimeoutMilliseconds(context.TimeoutMs),
+                    250);
+            }
+
             var cache = TestResultCache.instance;
             var run = ResolveRun(cache, state);
+            var testContext = CreateTestRunContext(state, context);
 
             if (run == null)
             {
-                if (!context.IsTimedOut)
+                if (!testContext.IsTimedOut)
                 {
                     return ContinueAfterDomainReload(state, 250);
                 }
@@ -177,28 +256,37 @@ namespace UniForge.Tools.Mutations
                 }, success: false);
             }
 
-            if (ShouldContinueWaitingAfterDomainReload(run, context))
+            var shouldContinueWaiting =
+                ShouldContinueWaitingAfterDomainReload(run, testContext.IsTimedOut) ||
+                (!run.completed && !testContext.IsTimedOut);
+            if (shouldContinueWaiting)
             {
-                return ContinueAfterDomainReload(state, 250);
-            }
+                if (!run.runStarted)
+                {
+                    EditorApplication.QueuePlayerLoopUpdate();
+                }
 
-            if (!run.completed && !context.IsTimedOut)
-            {
                 return ContinueAfterDomainReload(state, 250);
             }
 
             if (!run.completed)
             {
+                var timeoutMessage = $"Test run timed out after {context.TimeoutMs}ms";
+                if (!run.runStarted)
+                {
+                    timeoutMessage += " (the test run has not reported starting — the editor may be throttled/unfocused or a compile may be pending)";
+                }
+
                 // timeout した run の状態を残すと以後の run-tests がすべて
                 // 「already in progress」で拒否されるため、ここで中断する
                 TestRunnerService.instance.CancelRun(
                     run.runId,
                     $"Timed out after {context.TimeoutMs}ms",
-                    context.ElapsedMs / 1000.0);
+                    Math.Max(0L, testContext.ElapsedMs) / 1000.0);
 
                 return ToolResult.Complete(new RunTimedOutOutput
                 {
-                    message = $"Test run timed out after {context.TimeoutMs}ms",
+                    message = timeoutMessage,
                     timed_out = true,
                     run_id = state.run_id
                 }, success: false);
@@ -245,12 +333,141 @@ namespace UniForge.Tools.Mutations
             }, success: run.success);
         }
 
+        private static RunTestsWaitState CreateWaitState(TestExecutionSettings settings)
+        {
+            return new RunTestsWaitState
+            {
+                mode = settings.Mode,
+                test_names = settings.TestNames,
+                categories = settings.Categories,
+                assemblies = settings.Assemblies,
+                has_filter = settings.TestNames != null ||
+                             settings.Categories != null ||
+                             settings.Assemblies != null
+            };
+        }
+
+        private static TestExecutionSettings CreateExecutionSettings(RunTestsWaitState state)
+        {
+            return new TestExecutionSettings
+            {
+                Mode = state.mode,
+                TestNames = state.test_names,
+                Categories = state.categories,
+                Assemblies = state.assemblies
+            };
+        }
+
+        private bool TryStartTests(
+            TestExecutionSettings settings,
+            RunTestsWaitState state,
+            long testStartedAtUnixMs,
+            out string startError)
+        {
+            string runId;
+            if (StartTestsOverrideForTests != null)
+            {
+                runId = StartTestsOverrideForTests(settings);
+                startError = null;
+            }
+            else
+            {
+                runId = TestRunnerService.instance.StartTests(settings, out startError);
+            }
+
+            if (string.IsNullOrEmpty(runId))
+            {
+                return false;
+            }
+
+            var run = TestResultCache.instance.GetRun(runId);
+            state.waiting_for_compile = false;
+            state.run_id = runId;
+            state.run_start_time = run != null ? run.startTime : 0;
+            state.test_started_at = testStartedAtUnixMs;
+            return true;
+        }
+
+        private bool IsTestCacheReady()
+        {
+            if (TestCacheReadyOverrideForTests != null)
+            {
+                return TestCacheReadyOverrideForTests();
+            }
+
+#if UNITY_INCLUDE_TESTS
+            return TestRunnerService.instance.IsCacheReady;
+#else
+            return true;
+#endif
+        }
+
+        private void RefreshTestCache()
+        {
+            if (RefreshTestCacheOverrideForTests != null)
+            {
+                RefreshTestCacheOverrideForTests();
+                return;
+            }
+
+#if UNITY_INCLUDE_TESTS
+            TestRunnerService.instance.RefreshCache();
+#endif
+        }
+
+        private bool HasUnsavedSceneChanges(out string dirtyScenes)
+        {
+            if (DirtyScenesOverrideForTests != null)
+            {
+                dirtyScenes = DirtyScenesOverrideForTests();
+                return !string.IsNullOrEmpty(dirtyScenes);
+            }
+
+            return SceneHelper.HasUnsavedSceneChanges(out dirtyScenes);
+        }
+
+        private static DomainReloadResumeContext CreateTestRunContext(
+            RunTestsWaitState state,
+            DomainReloadResumeContext context)
+        {
+            var testStartedAt = state.test_started_at > 0
+                ? state.test_started_at
+                : state.run_start_time > 0
+                    ? state.run_start_time
+                    : context.RequestStartedAtUnixMs;
+
+            return new DomainReloadResumeContext(
+                testStartedAt,
+                context.CurrentTimeUnixMs,
+                context.TimeoutMs);
+        }
+
+        private static int ClampTimeoutMilliseconds(long timeoutMs)
+        {
+            if (timeoutMs <= 0)
+            {
+                return 0;
+            }
+
+            return timeoutMs > int.MaxValue ? int.MaxValue : (int)timeoutMs;
+        }
+
+        private static ToolResult StartTestsFailure(string startError)
+        {
+            return ToolResult.Fail(string.IsNullOrEmpty(startError)
+                ? "Failed to start test run"
+                : $"Failed to start test run: {startError}");
+        }
+
         private static TestRunRecord ResolveRun(TestResultCache cache, RunTestsWaitState state)
         {
-            var run = cache.GetRun(state.run_id);
-            if (run != null)
+            if (!string.IsNullOrEmpty(state.run_id))
             {
-                return run;
+                var run = cache.GetRun(state.run_id);
+                if (run != null)
+                {
+                    return run;
+                }
             }
 
             if (state.run_start_time <= 0)
@@ -285,6 +502,11 @@ namespace UniForge.Tools.Mutations
                 }
 
                 var state = JsonUtility.FromJson<RunTestsWaitState>(pending.stateJson);
+                if (state == null || state.waiting_for_compile)
+                {
+                    return true;
+                }
+
                 var run = ResolveRun(cache, state);
                 if (run == null || !run.completed)
                 {
@@ -295,9 +517,9 @@ namespace UniForge.Tools.Mutations
             return false;
         }
 
-        internal static bool ShouldContinueWaitingAfterDomainReload(TestRunRecord run, DomainReloadResumeContext context)
+        internal static bool ShouldContinueWaitingAfterDomainReload(TestRunRecord run, bool isTimedOut)
         {
-            return IsDomainReloadAbort(run) && !context.IsTimedOut;
+            return IsDomainReloadAbort(run) && !isTimedOut;
         }
 
         internal static bool IsDomainReloadAbort(TestRunRecord run)

@@ -91,6 +91,7 @@ namespace UniForge.Tests
             // OneTimeSetUp 失敗などのスイートレベル失敗は leaf 結果に現れないが、
             // RunFinished の集計 (FailCount=1) には現れる
             var callbacks = new TestRunnerCallbacks(run.runId, run.startTime);
+            callbacks.RunStarted(new FakeTestAdaptor { TestCaseCount = 1 });
             callbacks.RunFinished(new FakeRunResultAdaptor
             {
                 PassCount = 1,
@@ -107,6 +108,122 @@ namespace UniForge.Tests
             Assert.AreEqual(1, reloaded.passCount);
             Assert.AreEqual(1, reloaded.failCount);
             Assert.AreEqual(2, reloaded.totalCount);
+        }
+
+        #endregion
+
+        #region Execution GUID による callback の帰属確認
+
+        [Test]
+        public void TestRunnerCallbacks_GuidMismatch_IgnoresRunStarted()
+        {
+            var cache = TestResultCache.instance;
+            var run = cache.CreateRun("EditMode");
+            var callbacks = new TestRunnerCallbacks(
+                run.runId,
+                run.startTime,
+                (runId, executionGuid) =>
+                    runId == run.runId && executionGuid == "current-guid");
+            callbacks.BindExecutionGuid("stale-guid");
+
+            callbacks.RunStarted(new FakeTestAdaptor { TestCaseCount = 1 });
+
+            Assert.IsFalse(cache.GetRun(run.runId).runStarted);
+        }
+
+        [Test]
+        public void TestRunnerCallbacks_GuidMismatch_IgnoresResultsForStartedRun()
+        {
+            var cache = TestResultCache.instance;
+            var run = cache.CreateRun("EditMode");
+            cache.MarkRunStarted(run.runId);
+            var completedEventRaised = false;
+            var callbacks = new TestRunnerCallbacks(
+                run.runId,
+                run.startTime,
+                (runId, executionGuid) =>
+                    runId == run.runId && executionGuid == "current-guid");
+            callbacks.BindExecutionGuid("stale-guid");
+            callbacks.OnRunCompleted += _ => completedEventRaised = true;
+
+            callbacks.TestFinished(new FakeRunResultAdaptor());
+            callbacks.RunFinished(new FakeRunResultAdaptor());
+
+            var record = cache.GetRun(run.runId);
+            Assert.IsTrue(record.runStarted);
+            Assert.IsEmpty(record.results);
+            Assert.IsFalse(record.completed);
+            Assert.IsFalse(callbacks.IsCompleted);
+            Assert.IsFalse(completedEventRaised);
+        }
+
+        [Test]
+        public void TestRunnerCallbacks_DelayedPreviousRunFinished_DoesNotCompleteNextRun()
+        {
+            var cache = TestResultCache.instance;
+            var previousRun = cache.CreateRun("EditMode");
+            cache.CompleteRun(previousRun.runId, 0.1);
+            var nextRun = cache.CreateRun("EditMode");
+            var completedEventRaised = false;
+            var callbacks = new TestRunnerCallbacks(
+                nextRun.runId,
+                nextRun.startTime,
+                (runId, executionGuid) =>
+                    runId == nextRun.runId && executionGuid == "next-guid");
+            callbacks.BindExecutionGuid("next-guid");
+            callbacks.OnRunCompleted += _ => completedEventRaised = true;
+            callbacks.RunStarted(new FakeTestAdaptor { TestCaseCount = 1 });
+            Assert.IsTrue(cache.GetRun(nextRun.runId).runStarted);
+
+            var delayedResult = new FakeRunResultAdaptor
+            {
+                PassCount = 1,
+                StartTime = DateTimeOffset
+                    .FromUnixTimeMilliseconds(nextRun.startTime - 1)
+                    .UtcDateTime
+            };
+            callbacks.TestFinished(delayedResult);
+            callbacks.RunFinished(delayedResult);
+
+            var record = cache.GetRun(nextRun.runId);
+            Assert.IsEmpty(record.results);
+            Assert.IsFalse(record.completed);
+            Assert.AreEqual(nextRun.runId, cache.CurrentRunId);
+            Assert.IsFalse(completedEventRaised);
+
+            callbacks.RunFinished(new FakeRunResultAdaptor
+            {
+                PassCount = 1,
+                StartTime = DateTime.SpecifyKind(
+                    DateTimeOffset
+                        .FromUnixTimeMilliseconds(nextRun.startTime + 1)
+                        .UtcDateTime,
+                    DateTimeKind.Unspecified)
+            });
+
+            Assert.IsTrue(record.completed);
+            Assert.IsTrue(completedEventRaised);
+        }
+
+        [Test]
+        public void TestRunnerCallbacks_DefaultResultStartTime_AllowsCurrentRun()
+        {
+            var cache = TestResultCache.instance;
+            var run = cache.CreateRun("PlayMode");
+            var callbacks = new TestRunnerCallbacks(
+                run.runId,
+                run.startTime,
+                (runId, executionGuid) =>
+                    runId == run.runId && executionGuid == "current-guid");
+            callbacks.BindExecutionGuid("current-guid");
+            callbacks.RunStarted(new FakeTestAdaptor { TestCaseCount = 1 });
+
+            callbacks.RunFinished(new FakeRunResultAdaptor
+            {
+                StartTime = default
+            });
+
+            Assert.IsTrue(cache.GetRun(run.runId).completed);
         }
 
         #endregion
@@ -394,14 +511,19 @@ namespace UniForge.Tests
         /// </summary>
         private sealed class FakeRunResultAdaptor : ITestResultAdaptor
         {
-            public ITestAdaptor Test => null;
+            public ITestAdaptor Test { get; set; } = new FakeTestAdaptor
+            {
+                Name = "FakeTest",
+                FullName = "UniForge.Tests.FakeTest",
+                Categories = Array.Empty<string>()
+            };
             public string Name => "FakeRun";
             public string FullName => "FakeRun";
             public string ResultState => "Failed";
             public UnityEditor.TestTools.TestRunner.Api.TestStatus TestStatus
                 => UnityEditor.TestTools.TestRunner.Api.TestStatus.Failed;
             public double Duration => 1.0;
-            public DateTime StartTime => DateTime.UtcNow;
+            public DateTime StartTime { get; set; } = DateTime.UtcNow;
             public DateTime EndTime => DateTime.UtcNow;
             public string Message => null;
             public string StackTrace => null;
