@@ -71,7 +71,8 @@ namespace UniForge
                 ProjectIdentifier.GetProjectName(),
                 ProjectIdentifier.GetGitRoot(),
                 tools,
-                PendingDomainReloadToolRequestProcessor.GetPendingRequestIds());
+                PendingDomainReloadToolRequestProcessor.GetPendingRequestIds(),
+                Application.consoleLogPath);
             _transport.Send(registerMsg);
         }
 

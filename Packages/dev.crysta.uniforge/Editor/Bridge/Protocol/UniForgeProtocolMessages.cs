@@ -16,7 +16,8 @@ namespace UniForge
             string projectName,
             string gitRoot,
             List<Dictionary<string, object>> tools,
-            List<string> pendingRequestIds)
+            List<string> pendingRequestIds,
+            string consoleLogPath = null)
         {
             var paramsBuilder = SimpleJson.Object()
                 .Add("projectId", projectId)
@@ -25,6 +26,11 @@ namespace UniForge
             if (gitRoot != null)
             {
                 paramsBuilder = paramsBuilder.Add("gitRoot", gitRoot);
+            }
+
+            if (!string.IsNullOrEmpty(consoleLogPath))
+            {
+                paramsBuilder = paramsBuilder.Add("consoleLogPath", consoleLogPath);
             }
 
             paramsBuilder = paramsBuilder.AddRaw("tools", SimpleJson.Serialize(tools));
