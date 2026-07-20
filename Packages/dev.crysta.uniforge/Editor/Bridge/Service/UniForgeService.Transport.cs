@@ -6,6 +6,9 @@ namespace UniForge
 {
     public partial class UniForgeService
     {
+        [NonSerialized] private string _registerRequestId;
+        [NonSerialized] private string _registerPackageVersion;
+
         public void Connect()
         {
             if (_transport != null && _transport.IsConnected)
@@ -40,6 +43,8 @@ namespace UniForge
         {
             var client = _transport;
             _transport = null;
+            _registerRequestId = null;
+            _registerPackageVersion = null;
 
             if (client != null)
             {
@@ -65,6 +70,8 @@ namespace UniForge
             var tools = _toolRegistry.ToEnabledRegistrationList();
 
             var requestId = $"u-{DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()}";
+            var packageVersion = UnityEditor.PackageManager.PackageInfo
+                .FindForAssembly(typeof(UniForgeService).Assembly)?.version;
             var registerMsg = UniForgeProtocolMessages.BuildUnityRegisterRequest(
                 requestId,
                 ProjectIdentifier.GetProjectId(),
@@ -72,12 +79,22 @@ namespace UniForge
                 ProjectIdentifier.GetGitRoot(),
                 tools,
                 PendingDomainReloadToolRequestProcessor.GetPendingRequestIds(),
-                Application.consoleLogPath);
-            _transport.Send(registerMsg);
+                Application.consoleLogPath,
+                packageVersion);
+
+            _registerRequestId = requestId;
+            _registerPackageVersion = packageVersion;
+            if (!_transport.Send(registerMsg))
+            {
+                _registerRequestId = null;
+                _registerPackageVersion = null;
+            }
         }
 
         private void OnDisconnected()
         {
+            _registerRequestId = null;
+            _registerPackageVersion = null;
             Debug.Log("[UniForge] Disconnected from daemon");
         }
 
@@ -86,6 +103,17 @@ namespace UniForge
             try
             {
                 var baseMsg = JsonUtility.FromJson<JsonRpcMessage>(message);
+                if (baseMsg == null)
+                {
+                    return;
+                }
+
+                if (!string.IsNullOrEmpty(_registerRequestId)
+                    && string.Equals(baseMsg.id, _registerRequestId, StringComparison.Ordinal))
+                {
+                    HandleUnityRegisterResponse(message);
+                    return;
+                }
 
                 if (baseMsg.method == "daemon.executeTool" && !string.IsNullOrEmpty(baseMsg.id))
                 {
@@ -100,6 +128,29 @@ namespace UniForge
             {
                 Debug.LogError($"[UniForge] Failed to handle message: {ex}");
             }
+        }
+
+        private void HandleUnityRegisterResponse(string message)
+        {
+            var expectedRequestId = _registerRequestId;
+            var currentPackageVersion = _registerPackageVersion;
+            _registerRequestId = null;
+            _registerPackageVersion = null;
+
+            if (!UniForgeProtocolMessages.TryParseUnityRegisterResponse(
+                    message,
+                    expectedRequestId,
+                    out var success,
+                    out var latestPackageVersion,
+                    out var minPackageVersion)
+                || !success)
+            {
+                return;
+            }
+
+            var updateState = PackageUpdateState.instance;
+            updateState.UpdateVersions(currentPackageVersion, latestPackageVersion, minPackageVersion);
+            updateState.LogUpdateNotificationIfNeeded();
         }
 
         private void OnError(string error)
