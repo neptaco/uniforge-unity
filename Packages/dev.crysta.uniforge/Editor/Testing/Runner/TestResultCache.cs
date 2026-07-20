@@ -124,6 +124,13 @@ namespace UniForge.TestRunner
         public string currentRunId;
     }
 
+    internal enum TestRunSuccessorResolution
+    {
+        AnchorNotFound,
+        SuccessorNotFound,
+        Found
+    }
+
     internal static class TestRunPersistence
     {
         private const string IndexFileName = "index.json";
@@ -411,6 +418,40 @@ namespace UniForge.TestRunner
         {
             EnsureLoaded();
             return _runs.Count > 0 ? _runs[_runs.Count - 1] : null;
+        }
+
+        /// <summary>
+        /// Resolve the first run inserted after the specified anchor.
+        /// </summary>
+        internal TestRunSuccessorResolution ResolveSuccessor(
+            string anchorRunId,
+            out TestRunRecord successor)
+        {
+            EnsureLoaded();
+            successor = null;
+
+            if (string.IsNullOrEmpty(anchorRunId))
+            {
+                return TestRunSuccessorResolution.AnchorNotFound;
+            }
+
+            for (var i = 0; i < _runs.Count; i++)
+            {
+                if (!string.Equals(_runs[i].runId, anchorRunId, StringComparison.Ordinal))
+                {
+                    continue;
+                }
+
+                if (i + 1 >= _runs.Count)
+                {
+                    return TestRunSuccessorResolution.SuccessorNotFound;
+                }
+
+                successor = _runs[i + 1];
+                return TestRunSuccessorResolution.Found;
+            }
+
+            return TestRunSuccessorResolution.AnchorNotFound;
         }
 
         /// <summary>

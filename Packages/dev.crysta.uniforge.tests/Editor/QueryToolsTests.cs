@@ -232,6 +232,366 @@ namespace UniForge.Tests
             Assert.IsTrue(run.success);
         }
 
+        [Test]
+        public void GetTestResultsHandler_RunIdAndAfterRunId_Fails()
+        {
+            var cache = TestResultCache.instance;
+            cache.Clear();
+
+            var anchor = cache.CreateRun("EditMode");
+            cache.CompleteRun(anchor.runId, 0.1);
+            var target = cache.CreateRun("EditMode");
+
+            var handler = new GetTestResultsHandler();
+            var result = handler.Execute(
+                $"{{\"run_id\":\"{target.runId}\",\"after_run_id\":\"{anchor.runId}\"}}");
+
+            Assert.AreEqual(ToolResultKind.Fail, result.Kind);
+            Assert.That(result.Error, Does.Contain("run_id"));
+            Assert.That(result.Error, Does.Contain("after_run_id"));
+        }
+
+        [Test]
+        public void GetTestResultsHandler_WaitWithoutRunSelector_Fails()
+        {
+            var cache = TestResultCache.instance;
+            cache.Clear();
+
+            var current = cache.CreateRun("EditMode");
+            var handler = new GetTestResultsHandler();
+            var result = handler.Execute("{\"wait\":true}");
+
+            Assert.AreEqual(ToolResultKind.Fail, result.Kind);
+            Assert.That(result.Error, Does.Contain("wait"));
+            Assert.AreEqual(current.runId, cache.CurrentRunId,
+                "wait without a selector must not implicitly target or mutate the current run");
+            Assert.IsFalse(cache.GetRun(current.runId).completed);
+        }
+
+        [Test]
+        public void GetTestResultsHandler_UnknownAfterRunId_FailsWithoutLatestRunFallback()
+        {
+            var cache = TestResultCache.instance;
+            cache.Clear();
+
+            var latest = cache.CreateRun("EditMode");
+            cache.CompleteRun(latest.runId, 0.1);
+
+            const string MissingAnchor = "missing-anchor";
+            var handler = new GetTestResultsHandler();
+            var result = handler.Execute(
+                $"{{\"after_run_id\":\"{MissingAnchor}\",\"wait\":true}}");
+
+            Assert.AreEqual(ToolResultKind.Fail, result.Kind,
+                "An unknown anchor must fail instead of falling back to the latest run");
+            Assert.That(result.Error, Does.Contain(MissingAnchor));
+            Assert.IsNull(result.ResultPayload,
+                "The latest run must not be returned when the anchor is unknown");
+            Assert.AreEqual(latest.runId, cache.GetLastRun().runId);
+        }
+
+        [Test]
+        public void GetTestResultsHandler_AfterRunId_UsesFirstSuccessorAndKeepsTargetFixed()
+        {
+            var cache = TestResultCache.instance;
+            cache.Clear();
+
+            var anchor = cache.CreateRun("EditMode");
+            cache.CompleteRun(anchor.runId, 0.1);
+
+            var firstSuccessor = cache.CreateRun("EditMode");
+            cache.AddResult(firstSuccessor.runId, new TestResultEntry
+            {
+                fullName = "UniForge.Tests.FirstSuccessor",
+                displayName = "FirstSuccessor",
+                status = "Passed"
+            });
+
+            // Seed another successor before resolution so insertion order, rather
+            // than latest-run fallback, determines the selected target.
+            var laterSuccessor = cache.CreateRun("EditMode");
+            cache.AddResult(laterSuccessor.runId, new TestResultEntry
+            {
+                fullName = "UniForge.Tests.LaterSuccessor",
+                displayName = "LaterSuccessor",
+                status = "Passed"
+            });
+            cache.CompleteRun(laterSuccessor.runId, 0.2);
+
+            var handler = new GetTestResultsHandler();
+            var started = handler.Execute(
+                $"{{\"after_run_id\":\"{anchor.runId}\",\"wait\":true,\"timeout\":5000}}");
+
+            Assert.IsTrue(started.WaitsForDomainReload);
+            var fixedState = JsonUtility.FromJson<GetTestResultsHandler.DomainReloadState>(
+                started.DomainReloadStateJson);
+            Assert.AreEqual(anchor.runId, fixedState.after_run_id);
+            Assert.AreEqual(firstSuccessor.runId, fixedState.target_run_id);
+
+            // A run created after selection must not replace the fixed target.
+            var newerRun = cache.CreateRun("EditMode");
+            cache.AddResult(newerRun.runId, new TestResultEntry
+            {
+                fullName = "UniForge.Tests.NewerRun",
+                displayName = "NewerRun",
+                status = "Passed"
+            });
+            cache.CompleteRun(newerRun.runId, 0.2);
+
+            var stillWaiting = ResumeGetTestResults(
+                handler,
+                started.DomainReloadStateJson,
+                elapsedMs: 1000,
+                timeoutMs: 5000);
+
+            Assert.IsTrue(stillWaiting.WaitsForDomainReload);
+            var resumedState = JsonUtility.FromJson<GetTestResultsHandler.DomainReloadState>(
+                stillWaiting.DomainReloadStateJson);
+            Assert.AreEqual(firstSuccessor.runId, resumedState.target_run_id);
+
+            cache.CompleteRun(firstSuccessor.runId, 0.3);
+            var completed = ResumeGetTestResults(
+                handler,
+                stillWaiting.DomainReloadStateJson,
+                elapsedMs: 2000,
+                timeoutMs: 5000);
+
+            Assert.IsTrue(completed.Success);
+            var output = (GetTestResultsHandler.Output)completed.ResultPayload;
+            Assert.IsTrue(output.found);
+            Assert.AreEqual(firstSuccessor.runId, output.target_run_id);
+            Assert.AreEqual(firstSuccessor.runId, output.run_id);
+            Assert.AreEqual(1, output.results.Count);
+            Assert.AreEqual("UniForge.Tests.FirstSuccessor", output.results[0].full_name);
+        }
+
+        [Test]
+        public void GetTestResultsHandler_AfterRunIdWithoutSuccessorAndWaitFalse_ReturnsFoundFalse()
+        {
+            var cache = TestResultCache.instance;
+            cache.Clear();
+
+            var anchor = cache.CreateRun("EditMode");
+            cache.CompleteRun(anchor.runId, 0.1);
+
+            var handler = new GetTestResultsHandler();
+            var result = handler.Execute(
+                $"{{\"after_run_id\":\"{anchor.runId}\",\"wait\":false}}");
+
+            Assert.IsTrue(result.Success);
+            var output = (GetTestResultsHandler.Output)result.ResultPayload;
+            Assert.IsFalse(output.found);
+            Assert.IsNull(output.run_id);
+            Assert.IsNull(output.target_run_id);
+            Assert.AreEqual($"No run started after {anchor.runId}", output.message);
+        }
+
+        [Test]
+        public void GetTestResultsHandler_WaitForSuccessor_ContinuesUntilCompletedAndPreservesState()
+        {
+            var cache = TestResultCache.instance;
+            cache.Clear();
+
+            var anchor = cache.CreateRun("EditMode");
+            cache.CompleteRun(anchor.runId, 0.1);
+
+            var handler = new GetTestResultsHandler();
+            var started = handler.Execute(
+                $"{{\"after_run_id\":\"{anchor.runId}\",\"wait\":true," +
+                "\"status_filter\":\"failed\",\"include_stack_trace\":false," +
+                "\"limit\":1,\"timeout\":1234}");
+
+            Assert.IsTrue(started.WaitsForDomainReload);
+            var initialState = JsonUtility.FromJson<GetTestResultsHandler.DomainReloadState>(
+                started.DomainReloadStateJson);
+            Assert.AreEqual(anchor.runId, initialState.after_run_id);
+            Assert.IsTrue(string.IsNullOrEmpty(initialState.target_run_id));
+            Assert.IsTrue(initialState.wait);
+            Assert.AreEqual("failed", initialState.status_filter);
+            Assert.IsFalse(initialState.include_stack_trace);
+            Assert.AreEqual(1, initialState.limit);
+            Assert.AreEqual(1234, initialState.timeout);
+
+            var successor = cache.CreateRun("EditMode");
+            cache.AddResult(successor.runId, new TestResultEntry
+            {
+                fullName = "UniForge.Tests.Passed",
+                displayName = "Passed",
+                status = "Passed",
+                stackTrace = "passed stack"
+            });
+            cache.AddResult(successor.runId, new TestResultEntry
+            {
+                fullName = "UniForge.Tests.Failed",
+                displayName = "Failed",
+                status = "Failed",
+                message = "Expected failure",
+                stackTrace = "failed stack"
+            });
+
+            var waitingForCompletion = ResumeGetTestResults(
+                handler,
+                started.DomainReloadStateJson,
+                elapsedMs: 100,
+                timeoutMs: 1234);
+
+            Assert.IsTrue(waitingForCompletion.WaitsForDomainReload);
+            var fixedState = JsonUtility.FromJson<GetTestResultsHandler.DomainReloadState>(
+                waitingForCompletion.DomainReloadStateJson);
+            Assert.AreEqual(anchor.runId, fixedState.after_run_id);
+            Assert.AreEqual(successor.runId, fixedState.target_run_id);
+            Assert.IsTrue(fixedState.wait);
+            Assert.AreEqual("failed", fixedState.status_filter);
+            Assert.IsFalse(fixedState.include_stack_trace);
+            Assert.AreEqual(1, fixedState.limit);
+            Assert.AreEqual(1234, fixedState.timeout);
+
+            cache.CompleteRun(successor.runId, 0.5);
+            var completed = ResumeGetTestResults(
+                handler,
+                waitingForCompletion.DomainReloadStateJson,
+                elapsedMs: 200,
+                timeoutMs: 1234);
+
+            Assert.IsTrue(completed.Success);
+            var output = (GetTestResultsHandler.Output)completed.ResultPayload;
+            Assert.IsTrue(output.found);
+            Assert.AreEqual(successor.runId, output.run_id);
+            Assert.AreEqual(1, output.results.Count);
+            Assert.AreEqual("Failed", output.results[0].status);
+            Assert.IsNull(output.results[0].stack_trace);
+        }
+
+        [Test]
+        public void GetTestResultsHandler_Timeout_DoesNotCancelRunningTest()
+        {
+            var cache = TestResultCache.instance;
+            cache.Clear();
+
+            var anchor = cache.CreateRun("EditMode");
+            cache.CompleteRun(anchor.runId, 0.1);
+
+            var handler = new GetTestResultsHandler();
+            var started = handler.Execute(
+                $"{{\"after_run_id\":\"{anchor.runId}\",\"wait\":true,\"timeout\":1000}}");
+            Assert.IsTrue(started.WaitsForDomainReload);
+
+            // Most of the shared budget is spent waiting for the successor.
+            var target = cache.CreateRun("EditMode");
+            var targetDiscovered = ResumeGetTestResults(
+                handler,
+                started.DomainReloadStateJson,
+                elapsedMs: 900,
+                timeoutMs: 1000);
+
+            Assert.IsTrue(targetDiscovered.WaitsForDomainReload);
+            var targetState = JsonUtility.FromJson<GetTestResultsHandler.DomainReloadState>(
+                targetDiscovered.DomainReloadStateJson);
+            Assert.AreEqual(target.runId, targetState.target_run_id);
+
+            var timedOut = ResumeGetTestResults(
+                handler,
+                targetDiscovered.DomainReloadStateJson,
+                elapsedMs: 1000,
+                timeoutMs: 1000);
+
+            Assert.AreEqual(ToolResultKind.Complete, timedOut.Kind);
+            Assert.IsFalse(timedOut.Success);
+            Assert.IsFalse(timedOut.WaitsForDomainReload);
+            var output = (GetTestResultsHandler.Output)timedOut.ResultPayload;
+            Assert.IsTrue(output.found);
+            Assert.IsTrue(output.timed_out);
+            Assert.AreEqual(target.runId, output.target_run_id);
+            Assert.AreEqual(target.runId, output.run_id);
+            Assert.IsTrue(output.running);
+            Assert.IsFalse(output.completed);
+            Assert.That(output.message, Does.Contain("Timed out waiting for test results ("));
+
+            var unchanged = cache.GetRun(target.runId);
+            Assert.IsTrue(cache.IsRunning, "A query timeout must not cancel the test run");
+            Assert.AreEqual(target.runId, cache.CurrentRunId);
+            Assert.IsFalse(unchanged.completed);
+            Assert.IsFalse(unchanged.aborted);
+
+            // Reaching the total budget remains a timeout even if completion is
+            // observed by that resume call; the completed state is still reported.
+            cache.CompleteRun(target.runId, 0.2);
+            var completedAtDeadline = ResumeGetTestResults(
+                handler,
+                targetDiscovered.DomainReloadStateJson,
+                elapsedMs: 1000,
+                timeoutMs: 1000);
+
+            Assert.IsFalse(completedAtDeadline.Success);
+            var completedOutput = (GetTestResultsHandler.Output)completedAtDeadline.ResultPayload;
+            Assert.IsTrue(completedOutput.timed_out);
+            Assert.IsTrue(completedOutput.completed);
+            Assert.AreEqual(target.runId, completedOutput.target_run_id);
+        }
+
+        [Test]
+        public void GetTestResultsHandler_DomainReloadAbortWaitsButTerminalAbortReturnsResult()
+        {
+            var cache = TestResultCache.instance;
+            cache.Clear();
+
+            var anchor = cache.CreateRun("EditMode");
+            cache.CompleteRun(anchor.runId, 0.1);
+            var target = cache.CreateRun("EditMode");
+            cache.AbortRun(target.runId, TestResultCache.DomainReloadAbortReason, 0);
+
+            var handler = new GetTestResultsHandler();
+            var domainReloadAbort = handler.Execute(
+                $"{{\"after_run_id\":\"{anchor.runId}\",\"wait\":true,\"timeout\":5000}}");
+
+            Assert.IsTrue(domainReloadAbort.WaitsForDomainReload);
+            var waitingState = JsonUtility.FromJson<GetTestResultsHandler.DomainReloadState>(
+                domainReloadAbort.DomainReloadStateJson);
+            Assert.AreEqual(target.runId, waitingState.target_run_id);
+
+            var stillWaitingForCompletion = ResumeGetTestResults(
+                handler,
+                domainReloadAbort.DomainReloadStateJson,
+                elapsedMs: 500,
+                timeoutMs: 5000);
+            Assert.IsTrue(stillWaitingForCompletion.WaitsForDomainReload,
+                "A domain-reload abort is non-terminal and must continue waiting on resume");
+
+            const string TerminalReason = "Cancelled by test";
+            cache.AbortRun(target.runId, TerminalReason, 0.2);
+            var terminalAbort = ResumeGetTestResults(
+                handler,
+                stillWaitingForCompletion.DomainReloadStateJson,
+                elapsedMs: 1000,
+                timeoutMs: 5000);
+
+            Assert.IsTrue(terminalAbort.Success);
+            Assert.IsFalse(terminalAbort.WaitsForDomainReload);
+            var output = (GetTestResultsHandler.Output)terminalAbort.ResultPayload;
+            Assert.IsTrue(output.found);
+            Assert.AreEqual(target.runId, output.target_run_id);
+            Assert.AreEqual(target.runId, output.run_id);
+            Assert.IsTrue(output.completed);
+            Assert.IsTrue(output.aborted);
+            Assert.IsFalse(output.success);
+            Assert.AreEqual(TerminalReason, output.aborted_reason);
+        }
+
+        private static ToolResult ResumeGetTestResults(
+            GetTestResultsHandler handler,
+            string stateJson,
+            long elapsedMs,
+            long timeoutMs)
+        {
+            const long RequestStartedAt = 1000;
+            return ((IDomainReloadResumableTool)handler).ResumeAfterDomainReload(
+                stateJson,
+                new DomainReloadResumeContext(
+                    RequestStartedAt,
+                    RequestStartedAt + elapsedMs,
+                    timeoutMs));
+        }
+
         #endregion
 
         #region ComponentPropertyGetter Tests
