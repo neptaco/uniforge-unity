@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Text;
+using UnityEngine;
 
 namespace UniForge
 {
@@ -17,7 +18,8 @@ namespace UniForge
             string gitRoot,
             List<Dictionary<string, object>> tools,
             List<string> pendingRequestIds,
-            string consoleLogPath = null)
+            string consoleLogPath = null,
+            string packageVersion = null)
         {
             var paramsBuilder = SimpleJson.Object()
                 .Add("projectId", projectId)
@@ -31,6 +33,11 @@ namespace UniForge
             if (!string.IsNullOrEmpty(consoleLogPath))
             {
                 paramsBuilder = paramsBuilder.Add("consoleLogPath", consoleLogPath);
+            }
+
+            if (!string.IsNullOrEmpty(packageVersion))
+            {
+                paramsBuilder = paramsBuilder.Add("packageVersion", packageVersion);
             }
 
             paramsBuilder = paramsBuilder.AddRaw("tools", SimpleJson.Serialize(tools));
@@ -101,6 +108,95 @@ namespace UniForge
         internal static string ExtractStringField(string json, string fieldName)
         {
             return TcpTransportClient.ExtractStringField(json, fieldName);
+        }
+
+        internal static bool TryParseUnityRegisterResponse(
+            string message,
+            out string requestId,
+            out bool success,
+            out string latestPackageVersion,
+            out string minPackageVersion)
+        {
+            requestId = null;
+            success = false;
+            latestPackageVersion = null;
+            minPackageVersion = null;
+
+            if (string.IsNullOrWhiteSpace(message))
+            {
+                return false;
+            }
+
+            var trimmedMessage = message.Trim();
+            if (trimmedMessage.Length < 2 || trimmedMessage[0] != '{' || trimmedMessage[trimmedMessage.Length - 1] != '}')
+            {
+                return false;
+            }
+
+            try
+            {
+                var response = JsonUtility.FromJson<UnityRegisterResponseMessage>(trimmedMessage);
+                if (response == null || string.IsNullOrEmpty(response.id) || response.result == null)
+                {
+                    return false;
+                }
+
+                var responseObject = SimpleJson.Parse(trimmedMessage);
+                if (!responseObject.TryGetValue("result", out var resultValue)
+                    || !(resultValue is Dictionary<string, object> resultObject))
+                {
+                    return false;
+                }
+
+                var responseSuccess = true;
+                if (resultObject.TryGetValue("success", out var successValue))
+                {
+                    if (!(successValue is bool parsedSuccess))
+                    {
+                        return false;
+                    }
+
+                    responseSuccess = parsedSuccess;
+                }
+
+                requestId = response.id;
+                success = responseSuccess;
+                latestPackageVersion = response.result.latestPackageVersion;
+                minPackageVersion = response.result.minPackageVersion;
+                return true;
+            }
+            catch (Exception)
+            {
+                return false;
+            }
+        }
+
+        internal static bool TryParseUnityRegisterResponse(
+            string message,
+            string expectedRequestId,
+            out bool success,
+            out string latestPackageVersion,
+            out string minPackageVersion)
+        {
+            success = false;
+            latestPackageVersion = null;
+            minPackageVersion = null;
+
+            if (!TryParseUnityRegisterResponse(
+                    message,
+                    out var responseRequestId,
+                    out var parsedSuccess,
+                    out var parsedLatestPackageVersion,
+                    out var parsedMinPackageVersion)
+                || !string.Equals(responseRequestId, expectedRequestId, StringComparison.Ordinal))
+            {
+                return false;
+            }
+
+            success = parsedSuccess;
+            latestPackageVersion = parsedLatestPackageVersion;
+            minPackageVersion = parsedMinPackageVersion;
+            return true;
         }
 
         private static string ExtractJsonObjectField(string json, string fieldName)
@@ -207,6 +303,20 @@ namespace UniForge
                 }
             }
             sb.Append('"');
+        }
+
+        [Serializable]
+        private class UnityRegisterResponseMessage
+        {
+            public string id;
+            public UnityRegisterResponseResult result;
+        }
+
+        [Serializable]
+        private class UnityRegisterResponseResult
+        {
+            public string latestPackageVersion;
+            public string minPackageVersion;
         }
     }
 }

@@ -185,6 +185,7 @@ namespace UniForge.Tests
             StringAssert.DoesNotContain("\"pendingRequestIds\"", request);
             StringAssert.DoesNotContain("\"gitRoot\"", request);
             StringAssert.DoesNotContain("\"consoleLogPath\"", request);
+            StringAssert.DoesNotContain("\"packageVersion\"", request);
         }
 
         [Test]
@@ -202,6 +203,22 @@ namespace UniForge.Tests
             StringAssert.Contains(
                 "\"consoleLogPath\":\"/Users/me/Library/Logs/Unity/Editor.log\"",
                 request);
+        }
+
+        [Test]
+        public void BuildUnityRegisterRequest_WithPackageVersion_IncludesPackageVersion()
+        {
+            var request = UniForgeProtocolMessages.BuildUnityRegisterRequest(
+                "req-1",
+                "project-1",
+                "Project One",
+                null,
+                new List<Dictionary<string, object>>(),
+                new List<string>(),
+                packageVersion: "0.11.0");
+
+            StringAssert.Contains("\"packageVersion\":\"0.11.0\"", request);
+            StringAssert.DoesNotContain("\"consoleLogPath\"", request);
         }
 
         [Test]

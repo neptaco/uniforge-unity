@@ -108,6 +108,14 @@ namespace UniForge
                 EditorGUILayout.HelpBox(service.LastError, MessageType.Info);
             }
 
+            var packageUpdateState = PackageUpdateState.instance;
+            if (packageUpdateState.IsUpdateAvailable)
+            {
+                EditorGUILayout.LabelField(
+                    $"Update available: v{packageUpdateState.CurrentPackageVersion} -> v{packageUpdateState.LatestPackageVersion}",
+                    EditorStyles.miniLabel);
+            }
+
             // Connect/Disconnect button
             EditorGUILayout.Space();
             if (isConnected)
