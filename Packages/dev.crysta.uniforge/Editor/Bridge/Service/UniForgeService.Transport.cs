@@ -142,14 +142,21 @@ namespace UniForge
                     expectedRequestId,
                     out var success,
                     out var latestPackageVersion,
-                    out var minPackageVersion)
+                    out var minPackageVersion,
+                    out var latestPackageUnity,
+                    out var latestPackageUnityRelease)
                 || !success)
             {
                 return;
             }
 
             var updateState = PackageUpdateState.instance;
-            updateState.UpdateVersions(currentPackageVersion, latestPackageVersion, minPackageVersion);
+            updateState.UpdateVersions(
+                currentPackageVersion,
+                latestPackageVersion,
+                minPackageVersion,
+                latestPackageUnity,
+                latestPackageUnityRelease);
             updateState.LogUpdateNotificationIfNeeded();
         }
 

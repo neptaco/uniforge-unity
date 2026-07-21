@@ -85,22 +85,26 @@ namespace UniForge.Tests
         }
 
         [Test]
-        public void TryParseUnityRegisterResponse_WithPackageVersions_ReturnsVersions()
+        public void TryParseUnityRegisterResponse_WithPackageAndUnityVersions_ReturnsVersions()
         {
-            var json = "{\"jsonrpc\":\"2.0\",\"id\":\"u-1\",\"result\":{\"success\":true,\"latestPackageVersion\":\"0.12.0\",\"minPackageVersion\":\"0.10.0\"}}";
+            var json = "{\"jsonrpc\":\"2.0\",\"id\":\"u-1\",\"result\":{\"success\":true,\"latestPackageVersion\":\"0.12.0\",\"minPackageVersion\":\"0.10.0\",\"latestPackageUnity\":\"6000.2\",\"latestPackageUnityRelease\":\"0f1\"}}";
 
             var parsed = UniForgeProtocolMessages.TryParseUnityRegisterResponse(
                 json,
                 out var requestId,
                 out var success,
                 out var latestPackageVersion,
-                out var minPackageVersion);
+                out var minPackageVersion,
+                out var latestPackageUnity,
+                out var latestPackageUnityRelease);
 
             Assert.IsTrue(parsed);
             Assert.AreEqual("u-1", requestId);
             Assert.IsTrue(success);
             Assert.AreEqual("0.12.0", latestPackageVersion);
             Assert.AreEqual("0.10.0", minPackageVersion);
+            Assert.AreEqual("6000.2", latestPackageUnity);
+            Assert.AreEqual("0f1", latestPackageUnityRelease);
         }
 
         [Test]
@@ -113,13 +117,17 @@ namespace UniForge.Tests
                 out var requestId,
                 out var success,
                 out var latestPackageVersion,
-                out var minPackageVersion);
+                out var minPackageVersion,
+                out var latestPackageUnity,
+                out var latestPackageUnityRelease);
 
             Assert.IsTrue(parsed);
             Assert.AreEqual("u-1", requestId);
             Assert.IsTrue(success);
             Assert.IsNull(latestPackageVersion);
             Assert.IsNull(minPackageVersion);
+            Assert.IsNull(latestPackageUnity);
+            Assert.IsNull(latestPackageUnityRelease);
         }
 
         [Test]
@@ -132,13 +140,17 @@ namespace UniForge.Tests
                 out var requestId,
                 out var success,
                 out var latestPackageVersion,
-                out var minPackageVersion);
+                out var minPackageVersion,
+                out var latestPackageUnity,
+                out var latestPackageUnityRelease);
 
             Assert.IsTrue(parsed);
             Assert.AreEqual("u-1", requestId);
             Assert.IsTrue(success);
             Assert.AreEqual("0.12.0", latestPackageVersion);
             Assert.IsNull(minPackageVersion);
+            Assert.IsNull(latestPackageUnity);
+            Assert.IsNull(latestPackageUnityRelease);
         }
 
         [Test]
@@ -151,13 +163,17 @@ namespace UniForge.Tests
                 out var requestId,
                 out var success,
                 out var latestPackageVersion,
-                out var minPackageVersion);
+                out var minPackageVersion,
+                out var latestPackageUnity,
+                out var latestPackageUnityRelease);
 
             Assert.IsTrue(parsed);
             Assert.AreEqual("u-1", requestId);
             Assert.IsFalse(success);
             Assert.AreEqual("0.12.0", latestPackageVersion);
             Assert.IsNull(minPackageVersion);
+            Assert.IsNull(latestPackageUnity);
+            Assert.IsNull(latestPackageUnityRelease);
         }
 
         [Test]
@@ -170,12 +186,16 @@ namespace UniForge.Tests
                 "u-current",
                 out var success,
                 out var latestPackageVersion,
-                out var minPackageVersion);
+                out var minPackageVersion,
+                out var latestPackageUnity,
+                out var latestPackageUnityRelease);
 
             Assert.IsFalse(parsed);
             Assert.IsFalse(success);
             Assert.IsNull(latestPackageVersion);
             Assert.IsNull(minPackageVersion);
+            Assert.IsNull(latestPackageUnity);
+            Assert.IsNull(latestPackageUnityRelease);
         }
 
         [Test]
@@ -186,13 +206,17 @@ namespace UniForge.Tests
                 out var requestId,
                 out var success,
                 out var latestPackageVersion,
-                out var minPackageVersion);
+                out var minPackageVersion,
+                out var latestPackageUnity,
+                out var latestPackageUnityRelease);
 
             Assert.IsFalse(parsed);
             Assert.IsNull(requestId);
             Assert.IsFalse(success);
             Assert.IsNull(latestPackageVersion);
             Assert.IsNull(minPackageVersion);
+            Assert.IsNull(latestPackageUnity);
+            Assert.IsNull(latestPackageUnityRelease);
         }
     }
 }

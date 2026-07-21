@@ -111,9 +111,18 @@ namespace UniForge
             var packageUpdateState = PackageUpdateState.instance;
             if (packageUpdateState.IsUpdateAvailable)
             {
-                EditorGUILayout.LabelField(
-                    $"Update available: v{packageUpdateState.CurrentPackageVersion} -> v{packageUpdateState.LatestPackageVersion}",
-                    EditorStyles.miniLabel);
+                if (packageUpdateState.IsUnityUpgradeRequired)
+                {
+                    EditorGUILayout.HelpBox(
+                        packageUpdateState.GetWindowMessage(),
+                        MessageType.Info);
+                }
+                else
+                {
+                    EditorGUILayout.LabelField(
+                        packageUpdateState.GetWindowMessage(),
+                        EditorStyles.miniLabel);
+                }
             }
 
             // Connect/Disconnect button
