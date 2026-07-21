@@ -4,6 +4,7 @@
   "displayName": "UniForge",
   "description": "Local automation bridge between the UniForge CLI and Unity Editor",
   "unity": "6000.0",
+  "unityRelease": "0f1",
   "author": {
     "name": "CrystaDev",
     "url": "https://github.com/CrystaDev"
@@ -11,6 +12,10 @@
   "repository": {
     "type": "git",
     "url": "https://github.com/neptaco/uniforge-unity.git"
+  },
+  "dependencies": {
+    "com.unity.ugui": "2.0.0",
+    "com.unity.test-framework": "1.6.0"
   },
   "keywords": [
     "automation",
