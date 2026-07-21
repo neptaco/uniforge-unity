@@ -4,6 +4,7 @@
   "displayName": "UniForge",
   "description": "Local automation bridge between the UniForge CLI and Unity Editor",
   "unity": "6000.0",
+  "unityRelease": "0f1",
   "author": {
     "name": "CrystaDev",
     "url": "https://github.com/CrystaDev"

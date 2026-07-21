@@ -23,7 +23,7 @@ Then install the package with the UniForge CLI:
 uniforge package add neptaco/uniforge-unity/Packages/dev.crysta.uniforge
 ```
 
-When the project argument is omitted, UniForge detects the Unity project containing the current directory. The short GitHub source is expanded to the package's HTTPS Git URL, and the highest semantic-version tag is selected automatically. Existing manifest dependencies are preserved.
+When the project argument is omitted, UniForge detects the Unity project containing the current directory. The short GitHub source is expanded to the package's HTTPS Git URL, and the highest semantic-version tag is selected automatically. Before changing `Packages/manifest.json`, UniForge compares the package's minimum Unity version with the version in `ProjectSettings/ProjectVersion.txt`. Newer streams, including alpha and beta releases, are accepted when they meet that minimum. Older or unparseable versions stop without changing the project. Existing manifest dependencies are preserved.
 
 To run the command from another directory, pass the project path explicitly:
 
@@ -31,7 +31,7 @@ To run the command from another directory, pass the project path explicitly:
 uniforge package add /path/to/MyUnityProject neptaco/uniforge-unity/Packages/dev.crysta.uniforge
 ```
 
-In an interactive terminal, UniForge shows the resolved project, URL, tag, package reference, and manifest path before making the change. Enter `n` to cancel, or add `--yes` to skip this confirmation. Non-interactive commands proceed without prompting so CI and coding agents do not wait for input.
+In an interactive terminal, UniForge shows the project Unity version, package compatibility, resolved URL, tag, package reference, and manifest path before making the change. Enter `n` to cancel, or add `--yes` to skip this confirmation. Non-interactive commands skip the prompt so CI and coding agents do not wait for input, but they still run the compatibility check. Use `--force` only when you intentionally want to bypass a failed or unavailable check.
 
 To pin a release:
 
