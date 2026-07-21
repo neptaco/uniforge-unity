@@ -115,12 +115,16 @@ namespace UniForge
             out string requestId,
             out bool success,
             out string latestPackageVersion,
-            out string minPackageVersion)
+            out string minPackageVersion,
+            out string latestPackageUnity,
+            out string latestPackageUnityRelease)
         {
             requestId = null;
             success = false;
             latestPackageVersion = null;
             minPackageVersion = null;
+            latestPackageUnity = null;
+            latestPackageUnityRelease = null;
 
             if (string.IsNullOrWhiteSpace(message))
             {
@@ -163,6 +167,8 @@ namespace UniForge
                 success = responseSuccess;
                 latestPackageVersion = response.result.latestPackageVersion;
                 minPackageVersion = response.result.minPackageVersion;
+                latestPackageUnity = response.result.latestPackageUnity;
+                latestPackageUnityRelease = response.result.latestPackageUnityRelease;
                 return true;
             }
             catch (Exception)
@@ -176,18 +182,24 @@ namespace UniForge
             string expectedRequestId,
             out bool success,
             out string latestPackageVersion,
-            out string minPackageVersion)
+            out string minPackageVersion,
+            out string latestPackageUnity,
+            out string latestPackageUnityRelease)
         {
             success = false;
             latestPackageVersion = null;
             minPackageVersion = null;
+            latestPackageUnity = null;
+            latestPackageUnityRelease = null;
 
             if (!TryParseUnityRegisterResponse(
                     message,
                     out var responseRequestId,
                     out var parsedSuccess,
                     out var parsedLatestPackageVersion,
-                    out var parsedMinPackageVersion)
+                    out var parsedMinPackageVersion,
+                    out var parsedLatestPackageUnity,
+                    out var parsedLatestPackageUnityRelease)
                 || !string.Equals(responseRequestId, expectedRequestId, StringComparison.Ordinal))
             {
                 return false;
@@ -196,6 +208,8 @@ namespace UniForge
             success = parsedSuccess;
             latestPackageVersion = parsedLatestPackageVersion;
             minPackageVersion = parsedMinPackageVersion;
+            latestPackageUnity = parsedLatestPackageUnity;
+            latestPackageUnityRelease = parsedLatestPackageUnityRelease;
             return true;
         }
 
@@ -317,6 +331,8 @@ namespace UniForge
         {
             public string latestPackageVersion;
             public string minPackageVersion;
+            public string latestPackageUnity;
+            public string latestPackageUnityRelease;
         }
     }
 }
