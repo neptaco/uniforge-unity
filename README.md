@@ -36,19 +36,19 @@ In an interactive terminal, UniForge shows the project Unity version, package co
 To pin a release:
 
 ```bash
-uniforge package add neptaco/uniforge-unity/Packages/dev.crysta.uniforge --tag v0.11.0
+uniforge package add neptaco/uniforge-unity/Packages/dev.crysta.uniforge --tag v0.12.0
 ```
 
 The full URL form is also accepted when the tag is passed separately:
 
 ```bash
-uniforge package add "https://github.com/neptaco/uniforge-unity.git?path=Packages/dev.crysta.uniforge" --tag v0.11.0
+uniforge package add "https://github.com/neptaco/uniforge-unity.git?path=Packages/dev.crysta.uniforge" --tag v0.12.0
 ```
 
 Alternatively, open **Window > Package Management > Package Manager**, choose **Install package from git URL**, and paste:
 
 ```text
-https://github.com/neptaco/uniforge-unity.git?path=Packages/dev.crysta.uniforge#v0.11.0
+https://github.com/neptaco/uniforge-unity.git?path=Packages/dev.crysta.uniforge#v0.12.0
 ```
 
 The release tag keeps your project on a known package version. Check [Tags](https://github.com/neptaco/uniforge-unity/tags) for newer versions.

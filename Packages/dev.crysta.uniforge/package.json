@@ -1,6 +1,6 @@
 {
   "name": "dev.crysta.uniforge",
-  "version": "0.11.0",
+  "version": "0.12.0",
   "displayName": "UniForge",
   "description": "Local automation bridge between the UniForge CLI and Unity Editor",
   "unity": "6000.0",
