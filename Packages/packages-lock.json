@@ -137,7 +137,10 @@
       "version": "file:dev.crysta.uniforge",
       "depth": 0,
       "source": "embedded",
-      "dependencies": {}
+      "dependencies": {
+        "com.unity.ugui": "2.0.0",
+        "com.unity.test-framework": "1.6.0"
+      }
     },
     "dev.crysta.uniforge.tests": {
       "version": "file:dev.crysta.uniforge.tests",
