@@ -65,7 +65,9 @@ namespace UniForge.Tools.Addressables
             public int limit;
         }
 
-        protected internal override ToolResult Execute(string argsJson)
+        // QueryHandler.Execute は protected internal だが、別アセンブリからの override は
+        // internal 部分にアクセスできないため protected で宣言する必要がある（CS0507）。
+        protected override ToolResult Execute(string argsJson)
         {
             var args = new ToolArgsParser(argsJson);
 
