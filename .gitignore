@@ -66,6 +66,8 @@ sysinfo.txt
 *.swp
 *.swo
 *~
+# Package samples live in Samples~ (hidden from Unity's importer, but tracked)
+!Samples~/
 
 # OS
 .DS_Store
