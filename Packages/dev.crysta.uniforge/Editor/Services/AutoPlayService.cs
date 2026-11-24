@@ -8,6 +8,7 @@ using UnityEngine;
 using UnityEngine.EventSystems;
 using UnityEngine.SceneManagement;
 using UnityEngine.UI;
+using UniForge.Tools;
 using UniForge.Tools.Queries;
 using UniForge.Tools.Mutations;
 using UniForge.Tools.Mutations.InputSimulation;
@@ -341,7 +342,7 @@ namespace UniForge.Services
                 "wait_for_log" => await ExecuteWaitForLog(args, sinceTs),
                 "wait_for_object" => await ExecuteWaitForObject(args),
                 "wait_for_ui_state" => await ExecuteWaitForUiState(args),
-                "capture" => ExecuteCapture(args),
+                "capture" => await ExecuteCaptureAsync(args),
                 _ => StepResult.Fail($"Unknown async action: {action}")
             };
         }
@@ -574,6 +575,25 @@ namespace UniForge.Services
         // ---------------------------------------------------------------
         //  capture
         // ---------------------------------------------------------------
+
+        private async Awaitable<StepResult> ExecuteCaptureAsync(JsonObject args)
+        {
+            var gameOnly = args.GetBool("game_only", false);
+
+            // Game ビューのキャプチャは、撮る前に Play のフレームを進めて絵を新しくする
+            // （Editor が背面だと Play のフレームが止まり、その後に生成した Overlay の Canvas などが写らない）
+            string warning = null;
+            if (!gameOnly)
+            {
+                var status = await PlayModeFrameSync.WaitForRenderedFramesAsync();
+                warning = PlayModeFrameSync.ToCaptureWarning(status);
+            }
+
+            var result = ExecuteCapture(args);
+            if (result.Success && warning != null)
+                result.Message = $"{result.Message} (warning: {warning})";
+            return result;
+        }
 
         private StepResult ExecuteCapture(JsonObject args)
         {
