@@ -48,6 +48,7 @@ namespace UniForge.Tools.Mutations
             public string capture_method;
             public string image_base64;
             public string image_mime_type;
+            public string warning;
             public string error;
         }
 
@@ -71,7 +72,30 @@ namespace UniForge.Tools.Mutations
             { "Profiler", "UnityEditor.ProfilerWindow" },
         };
 
-        protected internal override ToolResult Execute(string argsJson)
+        private const string GameViewTypeName = "UnityEditor.GameView";
+
+        private static string ResolveTypeName(string windowName)
+            => WindowTypeMap.TryGetValue(windowName, out var mapped) ? mapped : windowName;
+
+        protected internal override async Awaitable<ToolResult> ExecuteAsync(string argsJson)
+        {
+            var args = new ToolArgsParser(argsJson);
+            var windowName = args.GetString("window");
+            var gameOnly = args.GetBool("game_only", false);
+
+            // Play 中の Game ビューは、撮る前にフレームを進めて絵を新しくする。
+            // Editor が背面だと Play のフレームが止まり、その後に生成した Overlay の Canvas などが写らないため。
+            string warning = null;
+            if (!string.IsNullOrEmpty(windowName) && ResolveTypeName(windowName) == GameViewTypeName && !gameOnly)
+            {
+                var status = await PlayModeFrameSync.WaitForRenderedFramesAsync();
+                warning = PlayModeFrameSync.ToCaptureWarning(status);
+            }
+
+            return Capture(argsJson, warning);
+        }
+
+        private ToolResult Capture(string argsJson, string warning)
         {
             var args = new ToolArgsParser(argsJson);
             var windowName = args.GetString("window");
@@ -85,7 +109,7 @@ namespace UniForge.Tools.Mutations
             }
 
             // ウィンドウタイプを解決
-            var typeName = WindowTypeMap.TryGetValue(windowName, out var mapped) ? mapped : windowName;
+            var typeName = ResolveTypeName(windowName);
 
             // 型を検索
             Type windowType = null;
@@ -222,6 +246,7 @@ namespace UniForge.Tools.Mutations
                     width = width,
                     height = height,
                     capture_method = captureMethod,
+                    warning = warning,
                     image_base64 = returnImage ? Convert.ToBase64String(File.ReadAllBytes(outputPath)) : null,
                     image_mime_type = returnImage ? "image/png" : null
                 });
