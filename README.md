@@ -100,7 +100,7 @@ The command requires Node.js. The installer detects supported coding agents and 
 | Scenes and objects | Inspect the hierarchy, create or delete GameObjects, change transforms and parents |
 | Components | Add or remove components, read and update serialized properties |
 | Assets and prefabs | Search assets, create materials, create/apply/revert prefabs |
-| Editor control | Enter or exit Play Mode, compile scripts, execute menu items, frame objects |
+| Editor control | Enter or exit Play Mode, compile scripts, execute menu items, frame objects, run C# with `eval` |
 | Testing and debugging | List and run tests, read logs, wait for log messages, capture Editor windows |
 | Play Mode interaction | Send supported input and run repeatable Play Mode scenarios |
 
