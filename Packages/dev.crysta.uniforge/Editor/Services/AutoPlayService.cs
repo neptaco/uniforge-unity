@@ -713,55 +713,20 @@ namespace UniForge.Services
             }
         }
 
-        private bool TryCaptureWindowInternal(EditorWindow window, string outputPath, out int width, out int height)
+        internal bool TryCaptureWindowInternal(EditorWindow window, string outputPath, out int width, out int height)
         {
-            width = 0;
-            height = 0;
-
-            RenderTexture rt = null;
-            Texture2D texture = null;
+            var png = EditorWindowCapture.TryGrabPng(window, out width, out height);
+            if (png == null)
+                return false;
 
             try
             {
-                var parentField = typeof(EditorWindow).GetField("m_Parent",
-                    System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
-                if (parentField == null) return false;
-
-                var hostView = parentField.GetValue(window);
-                if (hostView == null) return false;
-
-                var grabPixelsMethod = hostView.GetType().GetMethod("GrabPixels",
-                    System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance,
-                    null,
-                    new[] { typeof(RenderTexture), typeof(Rect) },
-                    null);
-                if (grabPixelsMethod == null) return false;
-
-                var pixelsPerPoint = EditorGUIUtility.pixelsPerPoint;
-                var position = window.position;
-                width = (int)(position.width * pixelsPerPoint);
-                height = (int)(position.height * pixelsPerPoint);
-
-                rt = new RenderTexture(width, height, 24, RenderTextureFormat.ARGB32);
-                grabPixelsMethod.Invoke(hostView, new object[] { rt, new Rect(0, 0, width, height) });
-
-                RenderTexture.active = rt;
-                texture = new Texture2D(width, height, TextureFormat.RGB24, false);
-                texture.ReadPixels(new Rect(0, 0, width, height), 0, 0);
-                texture.Apply();
-                RenderTexture.active = null;
-
-                File.WriteAllBytes(outputPath, texture.EncodeToPNG());
+                File.WriteAllBytes(outputPath, png);
                 return true;
             }
             catch
             {
                 return false;
-            }
-            finally
-            {
-                if (texture != null) UnityEngine.Object.DestroyImmediate(texture);
-                if (rt != null) UnityEngine.Object.DestroyImmediate(rt);
             }
         }
 
